@@ -1,0 +1,24 @@
+# 기본은 모두 제외, 아래 적은 코드만 허용
+*
+!.gitignore
+!README.md
+!package.json
+!package-lock.json
+!docs/
+!docs/**
+!db/
+!db/**
+!tests/
+!tests/**
+!tools/
+!tools/**
+
+# 허용한 폴더 안에서도 자료와 키는 제외
+*.geojson
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.env
+.env*
+drawn_*
