@@ -1,0 +1,30 @@
+{
+  "version": "2026-11-07a",
+  "slope": {
+    "first": 5,
+    "step": 10,
+    "end_gap": 5,
+    "end_back": 1,
+    "short_mid": 5,
+    "short_skip": 3,
+    "fine_step": 2,
+    "fine_both_step": 5,
+    "more_from": 3.2,
+    "more_dist": 5,
+    "match_tol": 0.6,
+    "long_recheck": [[4.5, 5.0], [5.5, 5.9]],
+    "cross_recheck": [[2.0, 2.5]],
+    "bound_long": [4.8, 5.8],
+    "bound_cross": [2.3],
+    "flat_cross": 1.0,
+    "rough_offset_cm": 30
+  },
+  "bump": { "record_mm": 13, "photo_mm": 18, "recheck_mm": [18, 22], "smooth_ratio": 8 },
+  "gap": { "record_mm": 10 },
+  "width": { "narrow_cm": 150, "diff_cm": 20, "recheck_cm": 105, "max_cm": 500, "skip_len": 3 },
+  "range": { "long": 15, "cross": 10, "bump_mm": 300, "width_cm": [30, 1000] },
+  "check": { "len_pct": 15, "len_m": 2, "gap_m": 11, "neighbor_deg": 3, "gps_warn_m": 20, "mean_dist_m": 10 },
+  "tool": { "level_diff": 0.4, "level_repeat": 0.2, "caliper": [0.0, 26.5, 0.0], "caliper_tol": 0.2, "wheel": [9.7, 10.3] },
+  "uncertain": { "manual_long": [4.5, 5.0], "power_long": [5.5, 5.9] },
+  "app": { "role_minutes": 60, "track_s": 5, "track_flush_s": 60, "battery_warn": 20, "gps_acc_warn_m": 15, "sync_s": 30 }
+}

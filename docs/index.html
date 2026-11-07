@@ -2,10 +2,17 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' blob: data:; connect-src 'self' https://*.supabase.co; style-src 'self'; script-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'">
+<meta name="theme-color" content="#1f5fbf">
 <title>현장 측정 기록</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
 </head>
 <body>
-<p>준비 중입니다.</p>
+<div id="app"><p class="boot">불러오는 중입니다.</p></div>
+<script type="module" src="js/app.js"></script>
+<noscript>이 앱은 자바스크립트가 필요합니다.</noscript>
 </body>
 </html>
