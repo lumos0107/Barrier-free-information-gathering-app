@@ -95,9 +95,10 @@ export function pendingMarks(plan, saved, len, fine = [], rules, stop = null) {
   }
   const used = new Set();
   const free = (i) => !used.has(i);
+  const top = topMark(saved);
   const take = (p) => {
-    // 끝 앞 지점은 실제 끝에서 재므로 거리와 상관없이 끝 앞 예정을 지운다.
-    if (p.kind === "end") {
+    // 끝 앞 지점은 실제 끝에서 재므로 거리와 상관없이 끝 앞 예정을 지운다. 되돌아가 잰 앞쪽 지점은 아니다.
+    if (p.kind === "end" && p.mark >= top - EPS) {
       const i = pool.findIndex((x, j) => free(j) && x.kind === "end");
       if (i >= 0) return i;
     }
@@ -122,10 +123,15 @@ export function pendingMarks(plan, saved, len, fine = [], rules, stop = null) {
   return pool.filter((_, i) => !used.has(i)).sort((p, q) => p.mark - q.mark);
 }
 
+// 차례대로 잰 지점 가운데 가장 먼 거리. 더한 지점은 세지 않는다.
+function topMark(saved) {
+  return saved.filter((p) => p.kind !== "more" && !p.added).reduce((m, p) => Math.max(m, p.mark), -Infinity);
+}
+
 // 남은 지점을 다음 차례(ahead)와 지나친 것(behind)으로 나눈다. 더한 지점(more)은 뒤에 있어도 차례에 둔다.
 // 지나친 예정 지점은 다음 일로 되돌아가지 않고 구간 끝에서 못 잰 지점으로 센다.
 export function splitPending(pending, saved, rules) {
-  const top = saved.filter((p) => p.kind !== "more" && !p.added).reduce((m, p) => Math.max(m, p.mark), -Infinity);
+  const top = topMark(saved);
   const ahead = [];
   const behind = [];
   for (const p of pending) (p.kind === "more" || p.mark >= top - rules.slope.match_tol - EPS ? ahead : behind).push(p);
@@ -135,6 +141,7 @@ export function splitPending(pending, saved, rules) {
 const distIn = (run, p) => continued(p.mark, run.start, run.breaks.slice(0, p.breakCount ?? run.breaks.length));
 
 // 아직 안 잰 예정 지점. 잰 거리 너머의 예정은 세지 않는다(끝까지 못 감, 실제 끝이 지도보다 짧은 길).
+// 다만 길이 경고가 있는 '길 맞음'은 끝값을 믿지 않고, 끝 앞 예정이 끝값에 걸려 빠져도 끝까지 end_gap을 넘으면 끝 앞 한 곳이 남는다.
 export function leftMarks(run, geo, rules) {
   if (run.result !== "ok" && run.result !== "stopped") return [];
   const plan = planMarks(geo.len, geo.fine, geo.stop, rules, geo.inclines);
@@ -142,7 +149,21 @@ export function leftMarks(run, geo, rules) {
   const left = pendingMarks(plan, saved, geo.len, geo.fine, rules, geo.stop);
   const measured = run.end != null ? continued(run.end, run.start, run.breaks) : null;
   if (measured == null) return run.result === "stopped" ? [] : left;
-  return left.filter((p) => p.mark < measured - rules.slope.match_tol - EPS);
+  if (run.result === "ok" && lengthMismatch(measured, geo.len, rules)) return left;
+  const S = rules.slope;
+  const limit = measured - S.match_tol - EPS;
+  const inside = left.filter((p) => p.mark < limit);
+  if (run.result !== "ok" || !left.some((p) => p.kind === "end" && p.mark >= limit)) return inside;
+  const last = [...saved, ...inside].reduce((m, p) => Math.max(m, p.mark), 0);
+  if (measured - last <= S.end_gap + EPS) return inside;
+  return [...inside, { mark: round1(measured - S.end_back), kind: "end", both: false, cross: true }];
+}
+
+// 좌우 '못 잼': 값이 없거나, 재확인 범위의 첫 값만 있고 둘째를 못 읽었다. 값을 나중에 넣으면 빠진다.
+function crossUnread(p, rules) {
+  if (!p.no_cross) return false;
+  const c = p.cross || [];
+  return !c.length || (c.length === 1 && needCrossRecheck(c[0], rules));
 }
 
 // 구간 측정의 못 잰 항목. 저장한 값이 아니라 지금의 원값으로 계산한다(매뉴얼 1장 나 5, 9장 다).
@@ -155,7 +176,7 @@ export function runMissing(run, geo, rules) {
   if (geo.len >= rules.width.skip_len && !run.barriers.some((b) => b.type === "width_rep" && b.value != null)) out.push("width");
   if (!run.surfaces.length) out.push("surface");
   if (run.barriers.some((b) => b.unread && b.unread.length)) out.push("barrier_value");
-  if (run.points.some((p) => p.no_cross && !(p.cross && p.cross.length))) out.push("cross");
+  if (run.points.some((p) => crossUnread(p, rules))) out.push("cross");
   if (run.no_barrier === "not_looked") out.push("barrier_look");
   return out;
 }

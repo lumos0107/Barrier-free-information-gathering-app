@@ -1865,6 +1865,62 @@ def test_single_phone_wording(p, url):
     return a
 
 
+def test_back_keeps_form(p, url):
+    """폰의 뒤로 가기가 입력 중인 양식을 지우지 않는다. 나가려면 화면의 취소를 누른다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.see('[data-t="next-mark"]')
+    a.tap('[data-tool="bump"]')
+    a.num("30")
+    a.page.go_back()
+    a.wait_text("뒤로 가기로 나갈 수 없습니다")
+    assert a.page.locator('[data-t="next-mark"]').count() == 0, a.text()[:200]
+    a.num("30")
+    a.opt("up")
+    a.opt("square")
+    a.num("100")
+    a.see('[data-t="form-save"]')
+    assert "30" in a.text(), a.text()[:300]
+    a.t("form-cancel")
+    a.see('[data-t="next-mark"]')
+    assert not [e for e in a.events() if e["kind"] == "barrier"]
+    a.close()
+    return a
+
+
+def test_phone_setup_shows_db(p, url):
+    """폰 설정에 데이터베이스 상태가 보이고, 로그인을 안 했으면 경고하고 바로 로그인할 수 있다."""
+    pk = TMP / "fake_db_pack3.json"
+    pk.write_text(json.dumps(fake_pack.build(HERE.parent / "tools" / "rules.json", db=FAKE_DB), ensure_ascii=False), encoding="utf-8")
+    a = App(p, url)
+
+    def handler(route, request):
+        if "/auth/v1/token" in request.url:
+            return route.fulfill(status=200, json={"access_token": "tok", "refresh_token": "ref", "expires_in": 3600})
+        if "/rest/v1/field_records" in request.url:
+            return route.fulfill(status=201, body="") if request.method == "POST" else route.fulfill(status=200, json=[])
+        return route.abort()
+
+    a.ctx.route("https://fake-project.supabase.co/**", handler)
+    a.load_pack(pk)
+    a.t("login-skip")
+    day_form(a)
+    a.see('[data-t="phone-ok"]')
+    cell = a.page.locator('[data-chk="데이터베이스"]')
+    assert "로그인 안 함" in cell.inner_text() and "warn-text" in (cell.get_attribute("class") or ""), cell.inner_text()
+    a.t("setup-login")
+    a.page.locator('[data-t="email"]').fill("x@test.invalid")
+    a.page.locator('[data-t="password"]').fill("y")
+    a.t("login")
+    a.see('[data-t="phone-ok"]')
+    cell = a.page.locator('[data-chk="데이터베이스"]')
+    assert "로그인됨" in cell.inner_text() and "warn-text" not in (cell.get_attribute("class") or ""), cell.inner_text()
+    assert a.page.locator('[data-t="setup-login"]').count() == 0
+    a.close()
+    return a
+
+
 def test_swap_role_saves_file_without_share(p, url):
     """역할을 바꾸면 보낼 폰을 묻지 않고 백업 파일을 폰에 저장한다."""
     a = App(p, url)

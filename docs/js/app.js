@@ -777,6 +777,15 @@ const PHONE_ITEMS = [
   "비행기 모드로 앱을 다시 열어 봤다", "이 폰에서 같은 주소의 다른 사이트를 열지 않는다",
 ];
 
+// 폰이 한 대라 데이터베이스가 폰 밖의 유일한 사본이다.
+function dbCheck() {
+  const name = "데이터베이스";
+  if (!Sync.isConfigured()) return [name, "자료 파일에 정보 없음 (폰에만 저장)", false];
+  if (!S.user) return [name, "로그인 안 함 (기록이 폰에만 남습니다)", false];
+  if (S.syncError) return [name, `전송 대기 ${S.pendingN}건. ${S.syncError}`, false];
+  return [name, S.pendingN ? `로그인됨, 전송 대기 ${S.pendingN}건` : "로그인됨, 전송 끝", true];
+}
+
 function autoChecks() {
   const sw = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
   return [
@@ -784,6 +793,7 @@ function autoChecks() {
     ["통신 없이 열기", sw ? "준비됨" : "아직 안 됨 (앱을 닫았다 다시 여세요)", sw],
     ["저장 유지", S.persist === null ? "확인 전" : S.persist ? "허용됨" : "허용 안 됨 (백업 간격을 지키세요)", !!S.persist],
     ["화면 켜짐", S.wake === "on" ? "유지 중" : S.wake === "off" ? "안 됨" : "확인 전", S.wake === "on"],
+    dbCheck(),
     ["앱 판", APP_VERSION, true],
     ["자료 판", `${S.pack.hash.slice(0, 6)}${S.pack.test ? " (시험 자료)" : ""}`, true],
   ];
@@ -799,6 +809,7 @@ function phoneSetupScreen() {
     h("h1", {}, "폰 설정 확인"),
     h("table", {}, h("tbody", {}, rows.map(([a, b, ok]) => h("tr", {}, h("th", {}, a), h("td", { class: ok ? "" : "warn-text", "data-chk": a }, b))))),
     !S.gps && btn("위치 켜기", () => { startGps(true); render(); }, { class: "primary", "data-t": "gps-on" }),
+    Sync.isConfigured() && !S.user && btn("로그인", () => go("login"), { class: "primary", "data-t": "setup-login" }),
     h("h2", {}, "손으로 확인할 것"),
     h("ul", { class: "plain" }, PHONE_ITEMS.map((t) => h("li", {}, t))),
     btn("모두 확인함, 도구 점검으로", save(true), { class: "primary", "data-t": "phone-ok" }),
@@ -1955,8 +1966,10 @@ function guards() {
     if (S.screen === "measure" || S.screen === "move") {
       S.notices = [{ text: "측정 중에는 뒤로 가기로 나갈 수 없습니다. 나가려면 홈 버튼을 쓰세요" }];
       render();
-    } else if (S.form) cancelForm();
-    else goBack();
+    } else if (S.form) {
+      S.msg = "입력 중에는 뒤로 가기로 나갈 수 없습니다. 그만두려면 취소를, 앱을 나가려면 홈 버튼을 쓰세요";
+      render();
+    } else goBack();
   });
   document.addEventListener("visibilitychange", async () => {
     if (document.visibilityState === "visible") {

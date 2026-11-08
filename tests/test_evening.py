@@ -94,6 +94,30 @@ _ev = [
 _ri = E.route_input(_ev, _pk)
 check("완주 값 유지", len(_ri["values"]) == 1 and _ri["segments"][0]["run"] == "r1", str(_ri["segments"]))
 check("막힘 상태 얹음", _ri["segments"][0].get("blocked") == "temp_block", str(_ri["segments"]))
+
+
+# 앞선 막힘은 그 뒤에 완주하면 풀린다. 값으로 쓸 측정보다 뒤의 막힘만 얹는다
+def _runs(*results):
+    out, seq = [], 1
+    for i, (res, end) in enumerate(results):
+        out.append(_e(f"r{i}", seq, "run_start", {"seg": 0, "from": 10, "start": 0}))
+        if res in ("ok", "stopped"):
+            out.append(_e(f"p{i}", seq + 1, "slope", {"mark": 5, "values": [1.0], "method": "one", "cross": [1.0], "kind": "gap"}, f"r{i}"))
+        out.append(_e(f"x{i}", seq + 2, "run_end", {"end": end, "result": res, "missing": []}, f"r{i}"))
+        seq += 3
+    return out
+
+
+for _name, _res, _run, _block in (
+    ("일시 막힘 뒤 완주", [("temp_block", 2), ("ok", 30)], "r1", None),
+    ("잘못 누른 길 아님 뒤 완주", [("not_path", 2), ("ok", 30)], "r1", None),
+    ("완주 뒤 일시 막힘", [("ok", 30), ("temp_block", 2)], "r0", "temp_block"),
+    ("완주, 막힘, 길이 경고 있는 완주", [("ok", 30), ("temp_block", 2), ("ok", 20)], "r0", None),
+    ("막힘만 있음", [("no_entry", 2)], "r0", "no_entry"),
+    ("끝까지 못 감 뒤 출입 금지", [("stopped", 12), ("no_entry", 2)], "r0", "no_entry"),
+):
+    _g = E.route_input(_runs(*_res), _pk)["segments"][0]
+    check("막힘 판정 " + _name, _g["run"] == _run and _g.get("blocked") == _block, str(_g))
 # 사람이 고른 측정이 이긴다
 _ri = E.route_input(_ev, _pk, runs={"0": "r2"})
 check("사람이 고른 측정", _ri["segments"][0]["run"] == "r2", str(_ri["segments"]))
@@ -418,6 +442,9 @@ for c in cases["pending"]:
 for c in cases["run_missing"]:
     got = E.run_missing(c["run"], c["geo"], rules)
     check("못 잰 항목 " + c["name"], got == c["want"], got)
+    if "left" in c:
+        got = [m["mark"] for m in E.left_marks(c["run"], c["geo"], rules)]
+        check("남은 예정 " + c["name"], got == c["left"], got)
 
 
 def _closed(end, result, missing=()):

@@ -291,6 +291,7 @@ for (const c of cases.run_missing) {
   test(`못 잰 항목: ${c.name}`, () => {
     const run = { ...c.run, points: c.run.points.map((p) => ({ ...p, long: C.longRoute(p.values, p.method) })) };
     assert.deepEqual(C.runMissing(run, c.geo, rules), c.want);
+    if (c.left) assert.deepEqual(C.leftMarks(run, c.geo, rules).map((m) => m.mark), c.left);
   });
 }
 

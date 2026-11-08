@@ -152,9 +152,10 @@ def pending_marks(plan, saved, length, fine, rules, stop=None):
             if m > EPS and m < limit - EPS and not any(near(x["mark"], m) for x in pool):
                 pool.append({"mark": m, "kind": "more", "both": False, "cross": True})
     used = set()
+    top = max((p["mark"] for p in saved if p.get("kind") != "more" and not p.get("added")), default=-math.inf)
 
     def take(p):
-        if p.get("kind") == "end":
+        if p.get("kind") == "end" and p["mark"] >= top - EPS:
             for i, x in enumerate(pool):
                 if i not in used and x["kind"] == "end":
                     return i
@@ -202,7 +203,25 @@ def left_marks(r, geo, rules):
     if r["end"] is None:
         return [] if r["result"] == "stopped" else left
     measured = continued(r["end"], r["start"], breaks)
-    return [p for p in left if p["mark"] < measured - rules["slope"]["match_tol"] - EPS]
+    if r["result"] == "ok" and length_mismatch(measured, geo["len"], rules):
+        return left
+    S = rules["slope"]
+    limit = measured - S["match_tol"] - EPS
+    inside = [p for p in left if p["mark"] < limit]
+    if r["result"] != "ok" or not any(p["kind"] == "end" and p["mark"] >= limit for p in left):
+        return inside
+    last = max([p["mark"] for p in saved + inside] + [0])
+    if measured - last <= S["end_gap"] + EPS:
+        return inside
+    return inside + [{"mark": round1(measured - S["end_back"]), "kind": "end", "both": False, "cross": True}]
+
+
+def cross_unread(p, rules):
+    """좌우 '못 잼': 값이 없거나, 재확인 범위의 첫 값만 있고 둘째를 못 읽었다."""
+    if not p.get("no_cross"):
+        return False
+    c = p.get("cross") or []
+    return not c or (len(c) == 1 and in_ranges(abs(c[0]), rules["slope"]["cross_recheck"]))
 
 
 def run_missing(r, geo, rules):
@@ -220,7 +239,7 @@ def run_missing(r, geo, rules):
         out.append("surface")
     if any(b.get("unread") for b in r["barriers"]):
         out.append("barrier_value")
-    if any(p.get("no_cross") and not p.get("cross") for p in r["points"]):
+    if any(cross_unread(p, rules) for p in r["points"]):
         out.append("cross")
     if r.get("no_barrier") == "not_looked":
         out.append("barrier_look")
@@ -507,7 +526,8 @@ def choose_runs(S, pack, runs=None):
     """구간마다 경로 값에 쓸 구간 측정을 고른다.
     닫힌 측정 가운데 값을 잰 것(ok, 끝까지 못 감)만 고르고, 경로 줄, 길 맞음, 길이 경고 없음, 못 잰 항목 없음, 나중 순이다.
     잰 길이는 끝까지 못 감끼리만 비교한다. 길이 경고로 다시 잰 구간에서 앞의 틀린 측정이 뽑히지 않게 한다.
-    길 아님, 출입 금지, 일시 막힘은 값을 지우지 않고 구간 상태(blocked)로 얹는다. runs: {구간: 측정 번호}로 사람이 바꾼다."""
+    길 아님, 출입 금지, 일시 막힘은 값을 지우지 않고 구간 상태(blocked)로 얹는다. 그 뒤에 값으로 쓸 측정이나 완주가 있으면 풀린 것으로 본다.
+    runs: {구간: 측정 번호}로 사람이 바꾼다."""
     runs = {str(k): v for k, v in (runs or {}).items()}
     for k, v in runs.items():
         r = S["runs"].get(v)
@@ -524,21 +544,22 @@ def choose_runs(S, pack, runs=None):
     best, blocked = {}, {}
     for seg, rs in by_seg.items():
         closed = [r for r in rs if r["closed"]]
-        later_block = [r for r in closed if r["result"] in BLOCK_RESULTS]
-        if later_block:
-            blocked[seg] = later_block[-1]["result"]
         pick = runs.get(str(seg))
+        cand = [r for r in closed if r["result"] in VALUE_RESULTS]
         if pick and pick in S["runs"] and S["runs"][pick]["seg"] == seg:
             best[seg] = S["runs"][pick]
-            continue
-        cand = [r for r in closed if r["result"] in VALUE_RESULTS]
-        if cand:
+        elif cand:
             rank = lambda x: (x["route_line"], x["result"] == "ok", not long_warn(x), not x["missing"], measured_len(x) if x["result"] == "stopped" else 0.0, S["order"].index(x["id"]))
             best[seg] = max(cand, key=rank)
         elif closed:
             best[seg] = closed[-1]
         else:
             best[seg] = rs[-1]
+        passed = [r for r in closed if r["result"] == "ok"] + ([best[seg]] if best[seg]["result"] in VALUE_RESULTS else [])
+        since = max((S["order"].index(r["id"]) for r in passed), default=-1)
+        blocks = [r for r in closed if r["result"] in BLOCK_RESULTS and S["order"].index(r["id"]) > since]
+        if blocks:
+            blocked[seg] = blocks[-1]["result"]
     return best, blocked
 
 

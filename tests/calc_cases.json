@@ -945,6 +945,171 @@
      "gap"
     ]
    ]
+  },
+  {
+   "name": "되돌아가 잰 지점은 끝 앞 예정을 지우지 않는다",
+   "plan": [
+    [
+     5,
+     "gap",
+     false
+    ],
+    [
+     15,
+     "gap",
+     false
+    ],
+    [
+     22.4,
+     "end",
+     false
+    ]
+   ],
+   "saved": [
+    [
+     5,
+     1.0,
+     "gap",
+     null,
+     5,
+     1
+    ],
+    [
+     15.7,
+     1.0,
+     "gap",
+     null,
+     15,
+     1
+    ],
+    [
+     15.0,
+     1.0,
+     "end",
+     null,
+     22.4,
+     1
+    ]
+   ],
+   "len": 23.4,
+   "fine": [],
+   "want": [
+    [
+     22.4,
+     "end"
+    ]
+   ]
+  },
+  {
+   "name": "되돌아가 잰 뒤 실제 끝에서 재면 끝 앞 예정을 지운다",
+   "plan": [
+    [
+     5,
+     "gap",
+     false
+    ],
+    [
+     15,
+     "gap",
+     false
+    ],
+    [
+     22.4,
+     "end",
+     false
+    ]
+   ],
+   "saved": [
+    [
+     5,
+     1.0,
+     "gap",
+     null,
+     5,
+     1
+    ],
+    [
+     15.7,
+     1.0,
+     "gap",
+     null,
+     15,
+     1
+    ],
+    [
+     15.0,
+     1.0,
+     "end",
+     null,
+     22.4,
+     1
+    ],
+    [
+     21.0,
+     1.0,
+     "end",
+     null,
+     22.4,
+     1
+    ]
+   ],
+   "len": 23.4,
+   "fine": [],
+   "want": []
+  },
+  {
+   "name": "가장 먼 지점보다 조금 앞의 끝 앞 초안도 앞 지점을 지운다",
+   "plan": [
+    [
+     5,
+     "gap",
+     false
+    ],
+    [
+     15,
+     "gap",
+     false
+    ],
+    [
+     22.4,
+     "end",
+     false
+    ]
+   ],
+   "saved": [
+    [
+     5,
+     1.0,
+     "gap",
+     null,
+     5,
+     1
+    ],
+    [
+     15.7,
+     1.0,
+     "gap",
+     null,
+     15,
+     1
+    ],
+    [
+     15.3,
+     1.0,
+     "end",
+     null,
+     22.4,
+     1
+    ]
+   ],
+   "len": 23.4,
+   "fine": [],
+   "want": [
+    [
+     22.4,
+     "end"
+    ]
+   ]
   }
  ],
  "recheck": [
@@ -1818,6 +1983,413 @@
       ],
       "kind": "gap",
       "breakCount": 1
+     }
+    ],
+    "barriers": [
+     {
+      "type": "width_rep",
+      "value": 180
+     }
+    ],
+    "surfaces": [
+     {
+      "mark": 0
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "끝값이 지도보다 많이 짧으면 끝값 너머 예정도 못 잰 지점",
+   "geo": {
+    "len": 40,
+    "fine": [],
+    "stop": null,
+    "inclines": []
+   },
+   "run": {
+    "start": 0,
+    "end": 18,
+    "result": "ok",
+    "breaks": [],
+    "points": [
+     {
+      "mark": 5,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       1.0
+      ],
+      "kind": "gap"
+     },
+     {
+      "mark": 15,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       1.0
+      ],
+      "kind": "gap"
+     }
+    ],
+    "barriers": [
+     {
+      "type": "width_rep",
+      "value": 180
+     }
+    ],
+    "surfaces": [
+     {
+      "mark": 0
+     }
+    ]
+   },
+   "want": [
+    "slope_points"
+   ],
+   "left": [
+    25,
+    35
+   ]
+  },
+  {
+   "name": "끝까지 못 감은 잰 거리 너머를 세지 않는다",
+   "geo": {
+    "len": 40,
+    "fine": [],
+    "stop": null,
+    "inclines": []
+   },
+   "run": {
+    "start": 0,
+    "end": 18,
+    "result": "stopped",
+    "breaks": [],
+    "points": [
+     {
+      "mark": 5,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       1.0
+      ],
+      "kind": "gap"
+     },
+     {
+      "mark": 15,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       1.0
+      ],
+      "kind": "gap"
+     }
+    ],
+    "barriers": [
+     {
+      "type": "width_rep",
+      "value": 180
+     }
+    ],
+    "surfaces": [
+     {
+      "mark": 0
+     }
+    ]
+   },
+   "want": [],
+   "left": []
+  },
+  {
+   "name": "실제 끝이 조금 짧아도 마지막 지점에서 끝까지 5 m 넘으면 끝 앞이 남는다",
+   "geo": {
+    "len": 21,
+    "fine": [],
+    "stop": null,
+    "inclines": []
+   },
+   "run": {
+    "start": 0,
+    "end": 20.5,
+    "result": "ok",
+    "breaks": [],
+    "points": [
+     {
+      "mark": 5,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       1.0
+      ],
+      "kind": "gap"
+     },
+     {
+      "mark": 15,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       1.0
+      ],
+      "kind": "gap"
+     }
+    ],
+    "barriers": [
+     {
+      "type": "width_rep",
+      "value": 180
+     }
+    ],
+    "surfaces": [
+     {
+      "mark": 0
+     }
+    ]
+   },
+   "want": [
+    "slope_points"
+   ],
+   "left": [
+    19.5
+   ]
+  },
+  {
+   "name": "실제 끝이 짧고 마지막 지점에서 끝까지 5 m 이내면 끝",
+   "geo": {
+    "len": 21,
+    "fine": [],
+    "stop": null,
+    "inclines": []
+   },
+   "run": {
+    "start": 0,
+    "end": 19.5,
+    "result": "ok",
+    "breaks": [],
+    "points": [
+     {
+      "mark": 5,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       1.0
+      ],
+      "kind": "gap"
+     },
+     {
+      "mark": 15,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       1.0
+      ],
+      "kind": "gap"
+     }
+    ],
+    "barriers": [
+     {
+      "type": "width_rep",
+      "value": 180
+     }
+    ],
+    "surfaces": [
+     {
+      "mark": 0
+     }
+    ]
+   },
+   "want": [],
+   "left": []
+  },
+  {
+   "name": "끝 앞을 실제 끝 앞에서 재면 끝",
+   "geo": {
+    "len": 21,
+    "fine": [],
+    "stop": null,
+    "inclines": []
+   },
+   "run": {
+    "start": 0,
+    "end": 20.5,
+    "result": "ok",
+    "breaks": [],
+    "points": [
+     {
+      "mark": 5,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       1.0
+      ],
+      "kind": "gap"
+     },
+     {
+      "mark": 15,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       1.0
+      ],
+      "kind": "gap"
+     },
+     {
+      "mark": 19.5,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       1.0
+      ],
+      "kind": "end",
+      "target": 20
+     }
+    ],
+    "barriers": [
+     {
+      "type": "width_rep",
+      "value": 180
+     }
+    ],
+    "surfaces": [
+     {
+      "mark": 0
+     }
+    ]
+   },
+   "want": [],
+   "left": []
+  },
+  {
+   "name": "좌우 둘째 값을 못 재면 못 잰 항목",
+   "geo": {
+    "len": 4,
+    "fine": [],
+    "stop": null,
+    "inclines": []
+   },
+   "run": {
+    "start": 0,
+    "end": 4,
+    "result": "ok",
+    "breaks": [],
+    "points": [
+     {
+      "mark": 2,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       2.2
+      ],
+      "kind": "gap",
+      "no_cross": true
+     }
+    ],
+    "barriers": [
+     {
+      "type": "width_rep",
+      "value": 180
+     }
+    ],
+    "surfaces": [
+     {
+      "mark": 0
+     }
+    ]
+   },
+   "want": [
+    "cross"
+   ]
+  },
+  {
+   "name": "좌우 둘째 값까지 있으면 못 잼 표시가 있어도 못 잰 항목이 아니다",
+   "geo": {
+    "len": 4,
+    "fine": [],
+    "stop": null,
+    "inclines": []
+   },
+   "run": {
+    "start": 0,
+    "end": 4,
+    "result": "ok",
+    "breaks": [],
+    "points": [
+     {
+      "mark": 2,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       2.2,
+       2.3
+      ],
+      "kind": "gap",
+      "no_cross": true
+     }
+    ],
+    "barriers": [
+     {
+      "type": "width_rep",
+      "value": 180
+     }
+    ],
+    "surfaces": [
+     {
+      "mark": 0
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "저녁에 넣은 좌우 값이 재확인 범위 밖이면 못 잰 항목이 아니다",
+   "geo": {
+    "len": 4,
+    "fine": [],
+    "stop": null,
+    "inclines": []
+   },
+   "run": {
+    "start": 0,
+    "end": 4,
+    "result": "ok",
+    "breaks": [],
+    "points": [
+     {
+      "mark": 2,
+      "values": [
+       1.0
+      ],
+      "method": "one",
+      "cross": [
+       1.0
+      ],
+      "kind": "gap",
+      "no_cross": true
      }
     ],
     "barriers": [
