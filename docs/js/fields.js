@@ -8,7 +8,7 @@ const markBlank = { ...markStep, blank: "표시값 없음" };
 const endMark = { key: "mark_end", label: "끝 표시값", type: "mark", unit: "m", decimals: 1 };
 const unreadable = "못 잼";
 export const UNREADABLE = unreadable;
-const TOOLS = [["level_ruler", "수평계와 철자"], ["caliper", "캘리퍼"], ["tape", "줄자"], ["eye", "철자 눈높이"]];
+const TOOLS = [["level_ruler", "수평계와 철자"], ["caliper", "캘리퍼"], ["tape", "줄자"]];
 
 export const BARRIERS = {
   bump: {
@@ -16,7 +16,7 @@ export const BARRIERS = {
     steps: [
       markStep,
       { key: "value", label: "높이", type: "num", unit: "mm", decimals: 0, blank: unreadable, warn: (v, R) => (v != null && v < R.bump.record_mm ? `${R.bump.record_mm} mm 미만은 기록하지 않아도 됩니다` : v != null && v > R.range.bump_mm ? `${R.range.bump_mm} mm 넘음. 1번 더 읽어 주세요` : null) },
-      { key: "reason", label: "못 잰 이유", type: "text", showIf: (a) => a.value == null },
+      { key: "reason", label: "못 잰 이유 (철자 눈높이로 읽었으면 '눈높이'와 그 값)", type: "text", showIf: (a) => a.value == null },
       { key: "value2", label: "둘째 값(캘리퍼)", type: "num", unit: "mm", decimals: 0, blank: "바닥이 거칠어 안 잼", showIf: (a, R) => a.value != null && a.value >= R.bump.recheck_mm[0] && a.value <= R.bump.recheck_mm[1] },
       { key: "tool", label: "쓴 도구", type: "choice", options: TOOLS, auto: "level_ruler" },
       { key: "tool2", label: "둘째 값 도구", type: "choice", options: TOOLS, auto: "caliper", showIf: (a) => a.value2 != null },
@@ -253,7 +253,7 @@ export const WEATHER = [["sunny", "맑음"], ["cloudy", "흐림"], ["wet", "바�
 export const LINES = { main: "기본 줄", walk: "사람이 다니는 줄", gentle: "가장 완만한 줄" };
 export const STATUS_LABEL = { open: "재는 중", done: "끝", partial: "일부", redo: "다시 잼", not_path: "길 아님", no_entry: "출입 금지", temp_block: "일시 막힘" };
 export const POINT_KIND = { gap: "간격", fine: "1순위", end: "끝 앞", more: "더함" };
-export const MISSING_LABEL = { slope: "경사", slope_points: "일부 경사 지점", width: "폭", surface: "노면", cross: "좌우 경사", barrier_value: "장벽 값", other: "그 밖" };
+export const MISSING_LABEL = { slope: "경사", slope_points: "일부 경사 지점", width: "폭", surface: "노면", cross: "좌우 경사", barrier_value: "장벽 값", barrier_look: "장벽 확인", other: "그 밖" };
 
 export function labelOf(options, value) {
   const o = options.find((x) => x[0] === value);

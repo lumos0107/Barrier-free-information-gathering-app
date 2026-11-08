@@ -168,9 +168,15 @@ export class MapView {
       const p = pos(e);
       this.pointers.delete(e.pointerId);
       if (this.pointers.size < 2) this.pinch = null;
-      if (had && this.moved < 10 && performance.now() - this.downAt < 500 && this.onTap) this.onTap(p[0], p[1]);
+      // 손을 뗀 자리만 기억하고 고르기는 click에서 한다. 여기서 화면을 바꾸면 뒤따르는 click이 새로 올라온 버튼을 누른다.
+      this.pendingTap = had && this.moved < 10 && performance.now() - this.downAt < 500 ? p : null;
     };
     c.addEventListener("pointerup", up);
+    c.addEventListener("click", () => {
+      const t = this.pendingTap;
+      this.pendingTap = null;
+      if (t && this.onTap) this.onTap(t[0], t[1]);
+    });
     c.addEventListener("pointercancel", (e) => this.pointers.delete(e.pointerId));
   }
 

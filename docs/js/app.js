@@ -38,21 +38,30 @@ const nowIso = () => new Date().toISOString();
 const clock = (iso) => (iso ? new Date(iso).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }) : "-");
 const tap = () => { if (navigator.vibrate) navigator.vibrate(8); };
 
-const refold = () => { S.st = C.foldEvents(S.events, S.rules, S.dev); };
+const refold = () => { S.st = C.foldEvents(S.events, S.rules, S.dev, geoOfRun); };
 const today = () => new Date().toLocaleDateString("sv-SE");
 const dayOf = (iso) => new Date(iso).toLocaleDateString("sv-SE");
 // 오늘 출발 전 점검을 했는지. 다른 폰에서 복원한 기록도 센다.
 const checkedToday = (tool) => S.st.toolChecks.some((t) => t.tool === tool && t.when === "before" && dayOf(t.at) === today());
+const toolsDoneToday = () => ["level", "caliper", "wheel", "phone"].every(checkedToday);
+// 수평계가 실패한 채 다시 점검을 안 끝냈으면 그 기록을 돌려준다. 마친 뒤 점검은 다시 재지 않는다.
+function levelPending() {
+  const last = [...S.st.toolChecks].reverse().find((t) => t.tool === "level");
+  return last && last.mode === "pending" && last.when !== "after" ? last : null;
+}
 const openRun = () => (S.st && S.st.openRun ? S.st.runs[S.st.openRun] : null);
 
+const newPathSeg = (id, n) => (n ? { seg: id, a: `${id}a`, b: `${id}b`, len: n.len, xy: n.xy, isNew: true } : null);
 function segOf(id) {
   if (typeof id === "number") return S.pack.segs[id];
-  const n = S.st.newPaths[id];
-  if (!n) return null;
-  return { seg: id, a: `${id}a`, b: `${id}b`, len: n.len, xy: n.xy, isNew: true };
+  return newPathSeg(id, S.st.newPaths[id]);
 }
-const fineFor = (s, from) => (s.fine || []).map(([a, b]) => (from === s.a ? [a, b] : [round2(s.len - b), round2(s.len - a)])).sort((p, q) => p[0] - q[0]);
-const stopFor = (s, from) => (s.stop && s.stop.from === from ? s.stop.m : null);
+function geoOfRun(run, st) {
+  if (!S.pack) return null;
+  const seg = typeof run.seg === "number" ? S.pack.segs[run.seg] : newPathSeg(run.seg, st.newPaths[run.seg]);
+  return seg ? C.geoFor(seg, run.from) : null;
+}
+const { fineFor, stopFor } = C;
 const fromLabel = (s, from) => (from === s.a ? "A" : "B");
 const distOf = (run, p) => C.continued(p.mark, run.start, run.breaks.slice(0, p.breakCount ?? run.breaks.length));
 const markOfDist = (run, dist) => round1(dist - C.continued(0, run.start, run.breaks));
@@ -65,20 +74,26 @@ const lastMark = (run) => {
 };
 
 // 사건 쓰기. 디스크 기록이 끝난 뒤에만 돌아온다. 실패하면 화면 위에 붉은 띠를 고정한다.
-async function emit(kind, data, opt = {}) {
+async function emitMany(list) {
+  if (S.switching) throw new Error("자료를 바꾸는 중입니다");
   try {
-    const ev = await DB.addEvent((seq) => ({
-      id: opt.id || DB.uid(), seq, ord: C.nextOrd(Date.now(), S.st ? S.st.maxOrd : 0), kind, run: opt.run || undefined, at: nowIso(), dev: S.dev, app: APP_VERSION,
-      site: S.pack.site, test: !!S.pack.test, net: S.pack.net, pack: S.pack.hash, rules: S.rules.version,
-      by: S.st ? { m: S.st.people.measurer, r: S.st.people.recorder } : {}, gps: gpsStamp(), data,
+    let ord = S.st ? S.st.maxOrd : 0;
+    const evs = await DB.addEvents(list.map(([kind, data, opt = {}]) => (seq) => {
+      ord = C.nextOrd(Date.now(), ord);
+      return {
+        id: opt.id || DB.uid(), seq, ord, kind, run: opt.run || undefined, at: nowIso(), dev: S.dev, app: APP_VERSION,
+        site: S.pack.site, test: !!S.pack.test, net: S.pack.net, pack: S.pack.hash, rules: S.rules.version,
+        by: S.st ? { m: S.st.people.measurer, r: S.st.people.recorder } : {}, gps: gpsStamp(), data,
+      };
     }));
-    S.events.push(ev);
+    S.events.push(...evs);
     refold();
-    S.pendingN += 1;
+    S.pendingN += evs.length;
     S.storeError = "";
-    if (kind !== "track") S.lastSaved = ev.at;
+    const last = evs.filter((e) => e.kind !== "track").pop();
+    if (last) S.lastSaved = last.at;
     scheduleSync();
-    return ev;
+    return evs;
   } catch (e) {
     if (e && e.name === "ConstraintError") {
       // 이미 저장된 번호. 원값은 그대로 두고 쓰던 칸을 새로 연다.
@@ -94,6 +109,8 @@ async function emit(kind, data, opt = {}) {
     throw e;
   }
 }
+
+const emit = async (kind, data, opt = {}) => (await emitMany([[kind, data, opt]]))[0];
 
 // 사건을 쓰는 버튼. 쓰는 동안 다른 쓰기 버튼을 받지 않는다(연타로 시작, 닫기, 찍음이 겹치지 않게).
 let acting = false;
@@ -132,6 +149,7 @@ function goBack() {
     S.params = prev.params;
     S.focusDone = false;
     render();
+    flushUi();
   } else home();
 }
 
@@ -143,7 +161,10 @@ function home() {
   if (!S.st.day || S.st.day.date !== today()) return startDay();
   // 폰 설정 화면에서 앱이 다시 열려도 아침 점검을 건너뛰지 않는다
   if (!checkedToday("phone_setup")) return go("phone_setup", {}, { push: false });
-  if (!checkedToday("level")) return openForm("tool", null, { run: null, ctx: { when: "before" } });
+  // 도구 점검 네 기록이 다 있어야 끝난 것이다. 수평계가 실패했으면 다시 점검부터 한다.
+  if (!toolsDoneToday()) return openForm("tool", null, { run: null, ctx: { when: "before" } });
+  const lv = levelPending();
+  if (lv) return openForm("level_retry", null, { run: null, ctx: { first: Math.abs(Math.abs(lv.values[0]) - Math.abs(lv.values[1])), when: lv.when } });
   if (openRun()) return go("measure", {}, { push: false });
   if (routeNeeded()) return go("route", {}, { push: false });
   return go("move", {}, { push: false });
@@ -156,7 +177,7 @@ function persistUi() {
 }
 function flushUi() {
   clearTimeout(uiTimer);
-  if (!S.pack) return;
+  if (!S.pack || S.switching) return;
   const form = S.form ? { ...S.form, saving: undefined } : null;
   DB.setMeta("ui", { draft: S.draft, form, flow: S.flow, photoDue: S.photoDue }).catch(() => {});
 }
@@ -227,6 +248,27 @@ async function usePack(stored) {
   } catch { /* 권한 조회가 없는 브라우저는 '위치 켜기'로 켠다 */ }
 }
 
+// 저장소를 바꾼다. 지금 기록은 이 저장소에 그대로 남는다. 실패하면 앞 저장소로 돌아간다.
+async function switchPack(stored, key, curKey) {
+  const oldName = DB.currentName();
+  flushUi();
+  S.switching = true;
+  try {
+    DB.claim(curKey, oldName);
+    const name = DB.nameFor(key);
+    await DB.switchTo(name);
+    await DB.putPack(stored);
+    DB.claim(key, name);
+  } catch (e) {
+    await DB.switchTo(oldName);
+    DB.claim(curKey, oldName);
+    S.switching = false;
+    throw e;
+  }
+  sessionStorage.setItem("bf-after-switch", `${S.pack.name} 기록은 이 폰에 그대로 있습니다. 그 자료를 다시 넣으면 이어집니다`);
+  location.reload();
+}
+
 async function importPack(file) {
   S.msg = "";
   try {
@@ -235,19 +277,14 @@ async function importPack(file) {
     const { aerial, ...rest } = j;
     const stored = { ...rest, aerialBlob: aerial ? b64ToBlob(aerial) : null };
     const key = DB.siteKey(j);
-    if (S.pack && DB.siteKey(S.pack) !== key && S.events.length) {
-      // 다른 대상지나 연결망: 그 대상지의 저장소로 옮긴다. 지금 기록은 이 저장소에 그대로 남는다.
-      DB.claim(DB.siteKey(S.pack), DB.currentName());
-      const name = DB.nameFor(key);
-      await DB.switchTo(name);
-      await DB.putPack(stored);
-      DB.claim(key, name);
-      sessionStorage.setItem("bf-after-switch", `${S.pack.name} 기록은 이 폰에 그대로 있습니다. 그 자료를 다시 넣으면 이어집니다`);
-      location.reload();
+    const curKey = S.pack ? DB.siteKey(S.pack) : null;
+    // 다른 대상지: 그 대상지 저장소로 옮긴다. 지금 저장소가 비어 있어도 이미 있는 저장소는 그쪽으로 간다.
+    if (S.pack && curKey !== key && (S.events.length || DB.hasStore(key))) {
+      await switchPack(stored, key, curKey);
       return;
     }
-    DB.claim(key, DB.currentName());
     await DB.putPack(stored);
+    DB.claim(key, DB.currentName());
     await usePack(stored);
     refold();
     go("login", {}, { push: false });
@@ -257,11 +294,13 @@ async function importPack(file) {
   }
 }
 
+const packInput = () => h("input", { type: "file", accept: ".json,.txt,application/json", "data-t": "pack-file", onchange: (e) => e.target.files[0] && importPack(e.target.files[0]) });
+
 function packScreen() {
   return h("div", { class: "screen" },
     h("h1", {}, "자료 파일 넣기"),
     h("p", {}, "PC에서 받은 자료 파일(.json)을 고르세요. 구간표와 항공사진이 이 폰에만 저장됩니다."),
-    h("input", { type: "file", accept: ".json,.txt,application/json", "data-t": "pack-file", onchange: (e) => e.target.files[0] && importPack(e.target.files[0]) }),
+    packInput(),
     S.msg && h("div", { class: "notice" }, S.msg),
     h("p", { class: "small" }, `앱 판 ${APP_VERSION}`));
 }
@@ -533,10 +572,12 @@ function formScreen() {
       render();
     },
   }, h("span", {}, s.label), h("b", {}, displayAnswer(s, form.answers[s.key])))));
-  return h("div", { class: "screen fill" },
+  return h("div", { class: form.kind === "day" ? "screen" : "screen fill" },
     h("div", { class: "spread" }, h("h1", {}, def.label), form.kind !== "day" && btn("취소", cancelForm, { class: "mini", "data-t": "form-cancel" })),
     form.kind === "day" && S.user && !S.events.length && btn("다른 폰 기록을 데이터베이스에서 받기", pullDb, { class: "mini", "data-t": "pull-db" }),
-    form.kind === "day" && h("div", { class: "info" }, h("div", {}, "예비 폰으로 이어 쓰려면 백업 파일을 고르세요"), restoreInput()),
+    form.kind === "day" && h("div", { class: "info" },
+      h("div", {}, `지금 자료: ${S.pack.name}${S.pack.test ? " (시험 자료)" : ""}. 다른 대상지를 재려면 자료 파일을 고르세요`), packInput(),
+      h("div", {}, "다른 폰에서 이어 쓰려면 백업 파일을 고르세요"), restoreInput()),
     list,
     S.msg && h("div", { class: "notice" }, S.msg),
     step ? stepPanel(form, step) : summaryPanel(form, def));
@@ -694,7 +735,7 @@ async function saveForm() {
       }
       case "break":
         if (form.fixOf) await emit("fix", { of: form.fixOf, data }, { run: form.run });
-        else await emit("break", data, { run: form.run });
+        else await emit("break", data, { id: form.id, run: form.run });
         S.draft = null;
         S.form = null;
         return goBack();
@@ -731,9 +772,9 @@ function startDay() {
 }
 
 const PHONE_ITEMS = [
-  "홈 화면 아이콘으로 열었다 (메신저 링크 아님)", "두 폰의 앱 판과 자료 판이 같다", "위치 권한이 '정확한 위치'다",
-  "화면 자동 꺼짐을 늘렸다", "절전 모드를 껐다", "자동 회전을 껐다", "방해 금지를 켰다", "두 폰의 시각이 자동이다", "저장 공간 5 GB 이상, 전지 충분",
-  "예비 폰에 자료를 넣고 앱을 열었다", "비행기 모드로 앱을 다시 열어 봤다", "이 폰에서 같은 주소의 다른 사이트를 열지 않는다",
+  "홈 화면 아이콘으로 열었다 (메신저 링크 아님)", "위치 권한이 '정확한 위치'다",
+  "화면 자동 꺼짐을 늘렸다", "절전 모드를 껐다", "자동 회전을 껐다", "방해 금지를 켰다", "폰의 시각이 자동이다", "저장 공간 5 GB 이상, 전지 충분",
+  "비행기 모드로 앱을 다시 열어 봤다", "이 폰에서 같은 주소의 다른 사이트를 열지 않는다",
 ];
 
 function autoChecks() {
@@ -767,12 +808,15 @@ function phoneSetupScreen() {
 async function saveTool(d, when) {
   const R = S.rules;
   const levelOk = C.levelCheck(d.level_a, d.level_b, R);
-  await emit("tool_check", { when, tool: "level", values: [d.level_a, d.level_b], passed: levelOk, mode: levelOk ? null : "pending" });
   const calOk = C.caliperCheck(d.cal_closed, d.cal_coin, d.cal_depth, R);
-  await emit("tool_check", { when, tool: "caliper", values: [d.cal_closed, d.cal_coin, d.cal_depth], passed: calOk });
   const wheelOk = C.wheelCheck(d.wheel, R);
-  await emit("tool_check", { when, tool: "wheel", values: [d.wheel], passed: wheelOk });
-  await emit("tool_check", { when, tool: "phone", values: [d.phone_geo], passed: d.phone_geo === "yes" });
+  // 네 기록을 한 번에 쓴다. 중간에 앱이 죽어 일부만 남으면 아침 점검이 끝난 것처럼 보인다.
+  await emitMany([
+    ["tool_check", { when, tool: "level", values: [d.level_a, d.level_b], passed: levelOk, mode: levelOk ? null : "pending" }],
+    ["tool_check", { when, tool: "caliper", values: [d.cal_closed, d.cal_coin, d.cal_depth], passed: calOk }],
+    ["tool_check", { when, tool: "wheel", values: [d.wheel], passed: wheelOk }],
+    ["tool_check", { when, tool: "phone", values: [d.phone_geo], passed: d.phone_geo === "yes" }],
+  ]);
   S.form = null;
   S.notices = [];
   if (!calOk) S.notices.push({ text: "캘리퍼 점검 실패. 전지를 갈고 다시 하세요. 안 되면 철자로 읽고 '철자'로 적습니다" });
@@ -969,13 +1013,13 @@ function newDraft(run) {
   const fine = fineFor(seg, run.from);
   const stop = stopFor(seg, run.from);
   const plan = C.planMarks(seg.len, fine, stop, S.rules, seg.inclines);
-  const saved = run.points.map((p) => ({ mark: distOf(run, p), long: p.long, kind: p.kind, added: p.added }));
+  const saved = run.points.map((p) => ({ mark: distOf(run, p), long: p.long, kind: p.kind, added: p.added, target: p.target, n: (p.values || []).length }));
   const pend = C.pendingMarks(plan, saved, seg.len, fine, S.rules, stop);
   const { ahead, behind } = C.splitPending(pend, saved, S.rules);
   const nx = ahead[0] || null;
   const both = S.st.levelMode === "both_avg" || !!(nx && nx.both);
   return {
-    id: DB.uid(), run: run.id, dist: nx ? nx.mark : null, mark: nx ? markOfDist(run, nx.mark) : null, planned: !!nx, edited: false,
+    id: DB.uid(), run: run.id, target: nx ? nx.mark : null, dist: nx ? nx.mark : null, mark: nx ? markOfDist(run, nx.mark) : null, planned: !!nx, edited: false,
     kind: nx ? nx.kind : "more", both: !!(nx && nx.both), crossNeeded: nx ? nx.cross || S.st.levelMode === "both_avg" : true,
     method: both ? "both" : "one", baseMethod: both ? "both" : "one", sign: null, longs: [], crosses: [], buf: "", phase: nx ? "long" : "long", ten: false,
     queue: ahead.slice(1, 4).map((x) => markOfDist(run, x.mark)), behind: behind.map((x) => markOfDist(run, x.mark)), noMarkPlan: !nx, note: null, clear: null, noLong: false, noCross: false,
@@ -1101,7 +1145,7 @@ async function saveDraft() {
   const data = {
     mark: d.mark, dist: round2(dist), breakCount: run.breaks.length, kind: d.kind, method: d.method, values: d.longs, cross: d.crosses,
     flags: draftFlags(d), planned: d.planned && !d.edited, photos_required: need, note: d.note, clear: d.clear, memo: d.memo || "",
-    no_long: d.noLong || undefined, no_cross: d.noCross || undefined, added: d.added || undefined,
+    no_long: d.noLong || undefined, no_cross: d.noCross || undefined, added: d.added || undefined, target: d.target ?? undefined,
   };
   let ev;
   S.saving = true;
@@ -1269,7 +1313,7 @@ function toggleAdd(d, run) {
   if (d.added) { S.draft = newDraft(run); render(); return; }
   if (d.longs.length || d.crosses.length) return;
   const both = S.st.levelMode === "both_avg";
-  Object.assign(d, { added: "here", kind: "more", planned: false, both: false, crossNeeded: true, method: both ? "both" : "one", baseMethod: both ? "both" : "one", prevPhase: "long", phase: "mark", buf: "", sign: null });
+  Object.assign(d, { added: "here", target: null, kind: "more", planned: false, both: false, crossNeeded: true, method: both ? "both" : "one", baseMethod: both ? "both" : "one", prevPhase: "long", phase: "mark", buf: "", sign: null });
   render();
 }
 
@@ -1366,32 +1410,17 @@ function openEnd(run) {
 
 function endChecks(run, a) {
   const seg = segOf(run.seg);
-  const out = { warns: [], missing: [] };
-  const measured = a.end != null ? C.continued(a.end, run.start, run.breaks) : null;
   const R = S.rules;
+  const geo = C.geoFor(seg, run.from);
+  const trial = { ...run, end: a.end ?? run.end, result: a.result ?? run.result, no_barrier: a.no_barrier ?? run.no_barrier };
+  const out = { warns: [], missing: C.runMissing(trial, geo, R) };
+  const measured = trial.end != null ? C.continued(trial.end, run.start, run.breaks) : null;
   if (a.result === "ok" && measured != null && C.lengthMismatch(measured, seg.len, R)) {
     out.warns.push(`길이: 잰 값 ${fmt1(measured)} m, 지도 ${fmt1(seg.len)} m. 구간이 맞는지 보세요`);
     out.mismatch = true;
   }
-  // 못 잰 값은 잰 것으로 치지 않는다(매뉴얼 1장 나 5, 9장 다). 저녁 도구도 같은 규칙이다.
-  const fine = fineFor(seg, run.from);
-  const stop = stopFor(seg, run.from);
-  const plan = C.planMarks(seg.len, fine, stop, R, seg.inclines);
-  const valued = run.points.filter((p) => p.long != null);
-  if (plan.length && !valued.length) out.missing.push("slope");
-  else if (plan.length) {
-    const saved = valued.map((p) => ({ mark: distOf(run, p), long: p.long, kind: p.kind, added: p.added }));
-    let left = C.pendingMarks(plan, saved, seg.len, fine, R, stop);
-    if (a.result === "stopped") left = measured == null ? [] : left.filter((p) => p.mark < measured - R.slope.match_tol);
-    else if (a.result !== "ok") left = [];
-    if (left.length) {
-      out.warns.push(`아직 안 잰 지점 ${left.length}곳: ${left.slice(0, 4).map((p) => fmt1(markOfDist(run, p.mark))).join(", ")}`);
-      out.missing.push("slope_points");
-    }
-  }
-  if (seg.len >= R.width.skip_len && !run.barriers.some((b) => b.type === "width_rep" && b.value != null)) out.missing.push("width");
-  if (!run.surfaces.length) out.missing.push("surface");
-  if (run.barriers.some((b) => b.unread && b.unread.length)) out.missing.push("barrier_value");
+  const left = C.leftMarks(trial, geo, R);
+  if (left.length) out.warns.push(`아직 안 잰 지점 ${left.length}곳: ${left.slice(0, 4).map((p) => fmt1(markOfDist(run, p.mark))).join(", ")}`);
   return out;
 }
 
@@ -1442,12 +1471,11 @@ async function closeRun(form, data, redo) {
   const run = S.st.runs[form.run];
   const chk = endChecks(run, form.answers);
   const missing = [...new Set([...chk.missing, ...(form.ctx.extraMissing || [])])];
-  const noted = run.points.filter((p) => p.no_cross).length ? ["cross"] : [];
   await flushTrack();
   await emit("run_end", {
-    end: data.end, result: data.result, reason: data.reason || null, memo: data.memo || "", planned: !!form.answers.planned, missing: [...new Set([...missing, ...noted])],
+    end: data.end, result: data.result, reason: data.reason || null, memo: data.memo || "", planned: !!form.answers.planned, missing,
     no_barrier: data.no_barrier || null, twin: data.twin ? { seg: form.ctx.twin, result: data.twin } : null,
-  }, { run: run.id });
+  }, { id: form.id, run: run.id });
   if (redo) await emit("redo", { seg: run.seg, why: "length" });
   S.form = null;
   S.draft = null;
@@ -1700,7 +1728,7 @@ async function shareBackup() {
       await navigator.share({ files: [file], title: "측정 백업" });
       S.lastShared = nowIso();
       await DB.setMeta("lastShared", S.lastShared);
-      S.msg = `보냄 ${clock(S.lastShared)}. 예비 폰에서 ${S.events.length}건인지 확인하세요`;
+      S.msg = `보냄 ${clock(S.lastShared)}. 받은 폰에서 ${S.events.length}건인지 확인하세요`;
     } catch (e) {
       S.msg = e.name === "AbortError" ? "보내기를 취소했습니다" : `보내기 실패: ${e.message}`;
     }
@@ -1715,24 +1743,18 @@ const swapRole = act(async () => {
   const p = S.st.people;
   await emit("role", { measurer: p.recorder, recorder: p.measurer });
   syncSoon();
-  shareBackup();
+  // 폰이 한 대라 보낼 곳이 없다. 폰에 파일로 남기고, 통신되면 데이터베이스로 사본이 간다.
+  await downloadBackup();
 });
 
 function moreScreen() {
   const run = openRun();
-  const seg = run && segOf(run.seg);
-  const otherFrom = run && seg ? (run.from === seg.a ? seg.b : seg.a) : null;
   const section = (title, ...items) => [h("h2", {}, title), h("div", { class: "options grid" }, items)];
   return h("div", { class: "screen" },
     h("div", { class: "spread" }, h("h1", {}, "더 보기"), btn("닫기", goBack, { class: "mini", "data-t": "more-close" })),
     S.msg && h("div", { class: "notice" }, S.msg),
     run && section("지금 구간",
       btn("끊김", () => openForm("break"), { "data-t": "break" }),
-      btn("출발 마디 바꾸기", act(async () => {
-        await emit("run_edit", { changes: { from: otherFrom }, why: "wrong_dir" }, { run: run.id });
-        S.draft = null;
-        render();
-      }), { "data-t": "flip-from" }),
       btn("구간 바꾸기", () => openMap("change"), { "data-t": "change-seg" })),
     h("h2", {}, "장벽과 상태"),
     h("div", { class: "options grid" }, Object.entries(F.BARRIERS).filter(([k]) => !["bump", "gap", "width_rep"].includes(k)).map(([k, d]) => btn(d.label, () => openForm("barrier", k), { "data-barrier": k, class: "mini" }))),
@@ -1740,10 +1762,10 @@ function moreScreen() {
     h("div", { class: "options grid" }, Object.entries(F.FACILITIES).map(([k, d]) => btn(d.label, () => openForm("facility", k), { "data-fac": k, class: "mini" }))),
     h("div", { class: "row" }, btn("지도 표시 확인", () => openForm("map_check"), { class: "mini", "data-t": "map-check" }), btn("새 길", () => (run ? go("newpath_ask") : openMap("draw")), { class: "mini", "data-t": "new-path-more" })),
     h("h2", {}, "역할과 백업"),
-    btn("역할 바꾸고 백업 보내기", swapRole, { class: "primary", "data-t": "swap-role" }),
+    btn("역할 바꾸고 백업 파일 저장", swapRole, { class: "primary", "data-t": "swap-role" }),
     h("p", { class: "small" }, `기록 ${S.events.length}건. 파일 저장 ${clock(S.lastBackup)}, 보낸 시각 ${clock(S.lastShared)}`),
     h("div", { class: "row" }, btn("백업 파일 저장", downloadBackup, { "data-t": "backup-file" }), btn("백업 보내기", shareBackup, { "data-t": "backup-share" })),
-    h("p", { class: "small" }, "예비 폰에 넣어 이어 쓰거나 다른 폰의 기록을 합칠 때 백업 파일을 고르세요."),
+    h("p", { class: "small" }, "다른 폰에 넣어 이어 쓰거나 기록을 합칠 때 백업 파일을 고르세요."),
     restoreInput(),
     h("h2", {}, "데이터베이스"),
     h("p", { class: "small" }, Sync.isConfigured() ? `${S.user ? "로그인됨" : "로그인 안 됨"}. 전송 대기 ${S.pendingN}건, 마지막 전송 ${clock(S.lastSent)}${S.syncError ? `. ${S.syncError}` : ""}` : "자료 파일에 데이터베이스 정보가 없습니다"),
@@ -1762,7 +1784,7 @@ function moreScreen() {
     Object.keys(S.pack.p1_groups || {}).length ? btn(S.st.routeChoice ? `3순위 다시 고르기 (지금 ${S.st.routeChoice.route === "gate" ? "정문 쪽" : `${S.st.routeChoice.route}번 길`})` : "3순위 길 고르기", () => go("route"), { "data-t": "route-again" }) : null,
     h("h2", {}, "다른 자료 넣기"),
     h("p", { class: "small" }, `지금 자료: ${S.pack.name}${S.pack.test ? " (시험 자료)" : ""}. 다른 대상지 자료를 넣어도 이 기록은 폰에 그대로 남습니다.`),
-    h("input", { type: "file", accept: ".json,.txt,application/json", "data-t": "pack-file", onchange: (e) => e.target.files[0] && importPack(e.target.files[0]) }),
+    packInput(),
     h("p", { class: "small" }, "13 mm 미만의 턱은 기록하지 않았고, 13 mm 이상도 걸으며 찾은 것만 적었습니다."));
 }
 
@@ -1812,7 +1834,7 @@ function deviceScreen() {
     S.sw.latest && S.sw.running && S.sw.latest !== S.sw.running && btn("새 판 받기", () => {
       navigator.serviceWorker.controller.postMessage("use-latest");
     }, { class: "warn", "data-t": "use-latest" }),
-    h("p", { class: "small" }, "측정일에는 두 폰의 앱 판과 자료 판이 같아야 합니다. 새 판은 이 버튼을 눌렀을 때만 바뀝니다."),
+    h("p", { class: "small" }, "측정 전에 앱 판과 자료 판을 확인하세요. 새 판은 이 버튼을 눌렀을 때만 바뀝니다."),
     S.msg && h("div", { class: "info" }, S.msg));
 }
 
@@ -1836,7 +1858,7 @@ function scheduleSync() {
 const syncSoon = () => { clearTimeout(syncTimer); syncTimer = setTimeout(syncNow, 200); };
 
 async function syncNow() {
-  if (!S.pack || !Sync.isConfigured()) return;
+  if (!S.pack || S.switching || !Sync.isConfigured()) return;
   try {
     S.user = await Sync.currentUser();
     if (!S.user) return;
@@ -1900,7 +1922,7 @@ function startGps(force = false) {
 const round6 = (x) => Math.round(x * 1e6) / 1e6;
 
 async function flushTrack() {
-  if (!trackBuf.length || !S.pack) return;
+  if (!trackBuf.length || !S.pack || S.switching) return;
   const pts = trackBuf;
   trackBuf = [];
   const run = openRun();
@@ -2017,7 +2039,7 @@ function bootFail(e) {
   root.replaceChildren(h("div", { class: "screen", "data-t": "boot-fail" },
     h("h1", {}, "앱을 열지 못했습니다"),
     h("div", { class: "notice" }, String((e && e.message) || e)),
-    h("p", {}, "저장된 기록은 폰에 남아 있습니다. 다시 열어 보고, 안 되면 기록을 내려받아 예비 폰에서 이어 쓰세요."),
+    h("p", {}, "저장된 기록은 폰에 남아 있습니다. 다시 열어 보고, 안 되면 기록을 내려받아 다른 폰에서 이어 쓰세요."),
     btn("다시 열기", () => location.reload(), { class: "primary", "data-t": "boot-reload" }),
     btn("저장된 기록 내려받기", async () => {
       try {
@@ -2082,7 +2104,8 @@ async function bootInner() {
   // 이미 끝낸 아침 입력이나 날짜가 지난 입력은 되살리지 않는다
   const stale = S.form && (
     (S.form.kind === "day" && S.st.day && S.st.day.date === today())
-    || (S.form.kind === "tool" && (S.form.ctx.when || "before") === "before" && checkedToday("level"))
+    || (S.form.kind === "tool" && (S.form.ctx.when || "before") === "before" && toolsDoneToday())
+    || (S.form.kind === "level_retry" && !levelPending())
     || (S.form.kind !== "day" && (!S.st.day || S.st.day.date !== today())));
   if (stale) S.form = null;
   if (S.form) {

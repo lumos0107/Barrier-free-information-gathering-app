@@ -406,6 +406,99 @@ check("지운 끊김 앞 지점", near(_vs["v1"]["s"], 5.0), _vs["v1"]["s"])
 check("지운 끊김 뒤 지점", near(_vs["v2"]["s"], 13.0), _vs["v2"]["s"])
 
 
+# 2라운드 필수 ---------------------------------------------------------------------
+for c in cases["plan"]:
+    got = [[p["mark"], p["kind"], p["both"], p["cross"]] for p in E.plan_marks(c["len"], c["fine"], c.get("stop"), rules, c.get("inclines"))]
+    check("재는 지점 " + c["name"], got == c["want"], got)
+for c in cases["pending"]:
+    _plan = [{"mark": m[0], "kind": m[1], "both": bool(m[2]), "cross": True} if isinstance(m, list) else {"mark": m, "kind": "fine" if c["fine"] else "gap", "both": False, "cross": True} for m in c["plan"]]
+    _saved = [dict(zip(("mark", "long", "kind", "added", "target", "n"), x)) for x in c["saved"]]
+    got = [[p["mark"], p["kind"]] for p in E.pending_marks(_plan, _saved, c["len"], c["fine"], rules, c.get("stop"))]
+    check("남은 지점 " + c["name"], got == c["want"], got)
+for c in cases["run_missing"]:
+    got = E.run_missing(c["run"], c["geo"], rules)
+    check("못 잰 항목 " + c["name"], got == c["want"], got)
+
+
+def _closed(end, result, missing=()):
+    return base4 + [
+        ev("r0", 4, "run_start", {"seg": 0, "from": 10, "start": 0}),
+        slope("m1", 5, "r0", 5, [1.0]),
+        ev("w", 6, "barrier", {"type": "width_rep", "mark": 0, "value": 180}, run="r0"),
+        ev("n", 7, "surface", {"mark": 0, "material": "block", "grade": "good"}, run="r0"),
+        ev("e0", 8, "run_end", {"end": end, "result": result, "missing": list(missing)}, run="r0"),
+    ]
+
+
+# 닫은 구간을 고치면 저장값이 아니라 지금 원값으로 판정한다
+_ev = _closed(12, "stopped") + [ev("f0", 9, "fix", {"of": "e0", "data": {"end": 40, "result": "ok"}}, run="r0")]
+_seg = E.route_input(_ev, pk4)["segments"][0]
+check("고친 구간 다시 판정", _seg["status"] == "partial" and "slope_points" in _seg["missing"], _seg)
+_ev = _closed(12, "stopped") + [ev("v0", 9, "void", {"of": "m1"}, run="r0")]
+check("전 지점 지운 구간", "slope" in E.route_input(_ev, pk4)["segments"][0]["missing"])
+_ev = _closed(12, "stopped", ["other"])
+check("사람이 더한 항목 유지", E.route_input(_ev, pk4)["segments"][0]["missing"] == ["other"])
+
+# 길이 경고로 다시 재면 뒤의 맞는 측정을 고른다
+_ev = base4 + [
+    ev("r0", 4, "run_start", {"seg": 0, "from": 10, "start": 0}), slope("a1", 5, "r0", 5, [1.0]), ev("e0", 6, "run_end", {"end": 50, "result": "ok", "missing": []}, run="r0"),
+    ev("r1", 7, "run_start", {"seg": 0, "from": 10, "start": 0}), slope("a2", 8, "r1", 5, [1.0]), ev("e1", 9, "run_end", {"end": 40, "result": "ok", "missing": []}, run="r1"),
+]
+check("다시 잰 측정 고름", E.route_input(_ev, pk4)["segments"][0]["run"] == "r1")
+
+# 닫지 않은 측정의 값은 경로에 넣지 않는다
+_ev = base4 + [ev("r0", 4, "run_start", {"seg": 0, "from": 10, "start": 0}), slope("o1", 5, "r0", 5, [6.5])]
+_ri = E.route_input(_ev, pk4)
+check("열린 측정 값 뺌", _ri["segments"][0]["status"] == "open" and not _ri["values"], _ri["values"])
+
+# 사람이 고른 측정은 검증한다
+_ev = _closed(40, "ok") + [ev("r9", 9, "run_start", {"seg": 0, "from": 10, "start": 0})]
+for _bad, _name in (({"0": "없는번호"}, "없는 번호"), ({"1": "r0"}, "다른 구간"), ({"0": "r9"}, "닫지 않은 측정")):
+    try:
+        E.route_input(_ev, pk4, runs=_bad)
+        check("고른 측정 거부 " + _name, False)
+    except ValueError:
+        check("고른 측정 거부 " + _name, True)
+
+# 시설 기울기와 차량 진출입부에도 점검 실패를 붙인다
+_fail = [base4[0], ev("t", 2, "tool_check", {"when": "before", "tool": "level", "values": [1.0, 2.0], "passed": False, "mode": "no_judge"}), base4[2]]
+_ev = _fail + [
+    ev("r0", 4, "run_start", {"seg": 0, "from": 10, "start": 0}),
+    ev("fa", 5, "facility", {"type": "ramp", "mark": 5, "slope_low": 4.0}, run="r0"),
+    ev("dr", 6, "barrier", {"type": "driveway", "mark": 6, "cross": 3.0}, run="r0"),
+    ev("e0", 7, "run_end", {"end": 40, "result": "ok", "missing": []}, run="r0"),
+]
+_ri = E.route_input(_ev, pk4)
+check("시설 점검 실패", "tool_fail" in _ri["facilities"][0]["flags"] and _ri["facilities"][0]["uncertain_for"] == ["manual", "power"], _ri["facilities"][0])
+check("차량 진출입부 점검 실패", "tool_fail" in _ri["barriers"][0]["flags"], _ri["barriers"][0])
+_ev = base4 + [
+    ev("r0", 4, "run_start", {"seg": 0, "from": 10, "start": 0}),
+    ev("fa", 5, "facility", {"type": "ramp", "mark": 5, "slope_low": 4.0}, run="r0"),
+    ev("e0", 6, "run_end", {"end": 40, "result": "ok", "missing": []}, run="r0"),
+    ev("t9", 7, "tool_check", {"when": "after", "tool": "level", "values": [1.0, 2.0], "passed": False}),
+]
+check("시설 마친 뒤 실패", "tool_fail" in E.route_input(_ev, pk4)["facilities"][0]["flags"])
+
+# 저녁 확인: 값이 있어야 표시가 풀린다. 없는 번호와 숫자 아닌 값은 멈춘다
+_ev = base4 + [ev("r0", 4, "run_start", {"seg": 0, "from": 10, "start": 0}), slope("b1", 5, "r0", 5, [4.0, 4.3, 4.9], method="three"), ev("e0", 6, "run_end", {"end": 40, "result": "ok", "missing": []}, run="r0")]
+_v = E.route_input(_ev, pk4, overrides={"b1": {"why": "사진으로 판단 못 함"}})["values"][0]
+check("이유만 있으면 경계 유지", "boundary" in _v["flags"] and _v["uncertain_for"] == ["manual"] and "evening" not in _v["flags"], _v)
+_v = E.route_input(_ev, pk4, overrides={"b1": {"long": 4.3, "why": "돌 하나"}})["values"][0]
+check("값이 있으면 경계 해제", "boundary" not in _v["flags"] and "evening" in _v["flags"] and _v["evening_why"] == "돌 하나", _v)
+for _bad, _name in (({"없는사건": {"long": 1.0, "why": "x"}}, "없는 번호"), ({"b1": {"long": "많이", "why": "x"}}, "숫자 아님")):
+    try:
+        E.route_input(_ev, pk4, overrides=_bad)
+        check("저녁 확인 거부 " + _name, False)
+    except ValueError:
+        check("저녁 확인 거부 " + _name, True)
+
+# 저녁 고침은 낮의 고침 뒤에 적용하고, 지운 사진은 세지 않는다
+_ev = base4 + [ev("r0", 4, "run_start", {"seg": 0, "from": 10, "start": 0}), ev("m", 5, "run_edit", {"changes": {"start": 3}, "why": "fix_run"}, run="r0")]
+check("낮 고침 뒤 저녁 고침", E.fold(E.apply_fixes(_ev, [{"of": "r0", "data": {"start": 2}, "why": "다시 봄"}], pk4))["runs"]["r0"]["start"] == 2)
+_ev = base4 + [ev("r0", 4, "run_start", {"seg": 0, "from": 10, "start": 0}), ev("ph", 5, "photo", {"of": "m1"}, run="r0"), slope("m1", 6, "r0", 5, [1.0])]
+check("지운 사진", E.fold(E.apply_fixes(_ev, [{"void": "ph", "why": "잘못 누름"}], pk4))["photos"].get("m1", 0) == 0)
+
+
 print(f"시험 {count}개, 실패 {len(fails)}개")
 for f in fails:
     print("  실패:", str(f)[:300])

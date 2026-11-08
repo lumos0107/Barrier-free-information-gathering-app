@@ -9,7 +9,9 @@ const MAP_KEY = "bf-stores";
 const CUR_KEY = "bf-store-cur";
 const readMap = () => { try { return JSON.parse(localStorage.getItem(MAP_KEY) || "{}"); } catch { return {}; } };
 
-export const siteKey = (pack) => `${pack.site}_${pack.net}`;
+// 시험 자료와 실제 자료는 대상지가 같아도 기록을 섞지 않는다.
+export const siteKey = (pack) => `${pack.site}_${pack.net}${pack.test ? "_test" : ""}`;
+export const hasStore = (key) => !!readMap()[key];
 export const currentName = () => dbName;
 
 // 시작할 때 열 저장소 이름. 처음 쓰는 폰은 기본 이름이다.
@@ -86,18 +88,32 @@ export async function getDeviceId() {
   return id;
 }
 
-// 사건 1건을 쓴다. 일련번호, 사건, 전송 대기 표시를 한 트랜잭션으로 묶는다.
-export async function addEvent(make) {
+// 사건을 쓴다. 일련번호, 사건, 전송 대기 표시를 한 트랜잭션으로 묶는다. 여러 건이면 모두 저장되거나 하나도 안 된다.
+export async function addEvents(makers) {
   const tx = db.transaction(["events", "pending", "meta"], "readwrite", { durability: "strict" });
   const meta = tx.objectStore("meta");
-  const seq = ((await req(meta.get("seq"))) || 0) + 1;
-  meta.put(seq, "seq");
-  const ev = make(seq);
-  // add: 같은 번호가 이미 있으면 실패한다. 저장 직후 앱이 죽어 옛 초안이 돌아와도 원값을 덮어쓰지 않는다.
-  tx.objectStore("events").add(ev);
-  tx.objectStore("pending").put({ id: ev.id });
+  let seq = (await req(meta.get("seq"))) || 0;
+  const out = [];
+  try {
+    for (const make of makers) {
+      seq += 1;
+      const ev = make(seq);
+      // add: 같은 번호가 이미 있으면 실패한다. 저장 직후 앱이 죽어 옛 초안이 돌아와도 원값을 덮어쓰지 않는다.
+      tx.objectStore("events").add(ev);
+      tx.objectStore("pending").put({ id: ev.id });
+      out.push(ev);
+    }
+    meta.put(seq, "seq");
+  } catch (e) {
+    try { tx.abort(); } catch { /* 이미 끝난 트랜잭션 */ }
+    throw e;
+  }
   await done(tx);
-  return ev;
+  return out;
+}
+
+export async function addEvent(make) {
+  return (await addEvents([make]))[0];
 }
 
 export async function allEvents() {

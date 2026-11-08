@@ -563,7 +563,11 @@ def test_move_map_pick(p, url):
     assert r["seg"] == 2 and r["from"] == 13
     # 구간과 출발 마디를 바꿀 수 있다
     a.t("more")
-    a.t("flip-from")
+    a.t("records")
+    a.tap(f'[data-run="{s["openRun"]}"]')
+    a.t("edit-from")
+    a.opt("11")
+    a.t("form-save")
     a.wait_state(lambda s: s["runs"][s["openRun"]]["from"] == 11)
     a.close()
     return a
@@ -1518,6 +1522,361 @@ def test_void_break(p, url):
     assert not any(e["kind"] == "void" for e in a.events()), "한 번에 지워짐"
     a.t("void-record")
     a.wait_state(lambda s: s["openRun"] and len(s["runs"][s["openRun"]]["breaks"]) == 0)
+    a.close()
+    return a
+
+
+# 2라운드 필수 -----------------------------------------------------------------
+DROP_UI = """() => { const o = IDBObjectStore.prototype.put;
+  IDBObjectStore.prototype.put = function (v, k) { if (k === 'ui') return o.call(this, v, 'ui_dropped'); return o.apply(this, arguments); }; }"""
+
+
+def reopen(a):
+    a.page.reload()
+    a.page.wait_for_selector("#app > *")
+    time.sleep(0.5)
+
+
+def test_short_seg_counts_slope_missing(p, url):
+    """3 m 미만 구간을 안 재고 닫으면 경사가 못 잰 항목이다."""
+    a = App(p, url)
+    a.setup_day()
+    for seg in ("1", "0", "2"):
+        a.wait_text(f"다음 일: 구간 {seg}")
+        a.t("skip")
+    a.wait_text("다음 일: 구간 3")
+    a.start_run()
+    a.opt("block"); a.opt("good"); a.opt(""); a.t("form-save")
+    a.see('[data-t="next-mark"]')
+    a.tap('[data-tool="end"]')
+    a.num("25")
+    a.opt("ok")
+    a.fill_form()
+    a.t("close-run")
+    s = a.wait_state(lambda s: not s["openRun"] and s["runOrder"])
+    assert s["runs"][s["runOrder"][0]]["missing"] == ["slope"] and s["segStatus"]["3"] == "partial", s["segStatus"]
+    a.close()
+    return a
+
+
+def test_status_after_closed_fix(p, url):
+    """끝까지 못 감을 길 맞음으로 고치면 안 잰 지점이 못 잰 항목으로 잡힌다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    a.tap('[data-tool="end"]')
+    a.num("120")
+    a.opt("stopped")
+    a.fill_form()
+    a.t("close-run")
+    s = a.wait_state(lambda s: not s["openRun"] and s["runOrder"])
+    rid = s["runOrder"][0]
+    a.t("more")
+    a.t("records")
+    a.tap(f'[data-run="{rid}"]')
+    a.t("edit-result")
+    a.opt("ok")
+    a.t("edit-end")
+    a.num("300")
+    a.t("form-save")
+    s = a.wait_state(lambda s: s["runs"][rid]["result"] == "ok")
+    assert "slope_points" in s["runs"][rid]["missing"] and s["segStatus"]["0"] == "partial", (s["runs"][rid]["missing"], s["segStatus"])
+    a.close()
+    return a
+
+
+def test_map_touch_no_ghost(p, url):
+    """지도는 손을 떼는 순간 화면을 바꾸지 않고 click에서 고른다. 그래야 새로 올라온 버튼이 눌리지 않는다."""
+    a = App(p, url)
+    a.setup_day()
+    a.t("pick")
+    a.see('[data-t="map"]')
+    time.sleep(0.2)
+    a.tap(".mapctl .mini")
+    box = a.page.locator('[data-t="map"]').bounding_box()
+    w, h = box["width"], box["height"]
+    k0 = min(w / 800, h / 800)
+    tx0, ty0 = (w - 800 * k0) / 2, (h - 800 * k0) / 2
+    r = 1.6 / k0
+    sx, sy = w * 0.5, h * 0.5
+    zx, zy = (sx - tx0 * r - 1.6 * 160) / (1 - r), (sy - ty0 * r - 1.6 * 100) / (1 - r)
+    a.page.touchscreen.tap(box["x"] + zx, box["y"] + zy)  # 먼저 확대한다
+    time.sleep(0.2)
+    pointer = """([kind, x, y]) => document.querySelector('[data-t="map"]').dispatchEvent(new PointerEvent(kind, { pointerId: 7, clientX: x, clientY: y, bubbles: true }))"""
+    px, py = box["x"] + sx, box["y"] + sy
+    a.page.evaluate("HTMLCanvasElement.prototype.setPointerCapture = () => {}")  # 만든 포인터는 붙잡을 수 없다
+    a.page.evaluate(pointer, ["pointerdown", px, py])
+    a.page.evaluate(pointer, ["pointerup", px, py])
+    time.sleep(0.2)
+    assert a.page.locator("[data-from]").count() == 0, "손을 떼는 순간 화면이 바뀜"
+    a.page.evaluate("""() => document.querySelector('[data-t="map"]').click()""")
+    a.see("[data-from]")
+    # 실제 터치로도 고를 수 있다
+    a.t("map-close")
+    a.t("pick")
+    a.see('[data-t="map"]')
+    time.sleep(0.2)
+    a.tap(".mapctl .mini")
+    time.sleep(0.1)
+    a.page.touchscreen.tap(box["x"] + zx, box["y"] + zy)
+    time.sleep(0.2)
+    a.page.touchscreen.tap(px, py)
+    a.see("[data-from]")
+    a.close()
+    return a
+
+
+def test_no_flip_button(p, url):
+    """재는 중 더 보기에서 한 번에 방향을 뒤집는 버튼이 없다. 고치기는 구간 머리 줄에서 한다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.see('[data-t="next-mark"]')
+    a.t("more")
+    a.see('[data-t="break"]')
+    assert a.page.locator('[data-t="flip-from"]').count() == 0
+    a.close()
+    return a
+
+
+def test_break_not_doubled_after_crash(p, url):
+    """끊김 저장 직후 앱이 죽어도 같은 끊김이 두 번 들어가지 않는다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    a.t("more")
+    a.t("break")
+    a.num("200")
+    a.num("0")
+    time.sleep(0.4)
+    a.page.evaluate(DROP_UI)
+    a.t("form-save")
+    a.poll("window.__bf.events().some(e => e.kind === 'break')")
+    reopen(a)
+    assert a.page.locator('[data-t="form-save"]').count() == 0, "저장한 끊김 입력이 되살아남: " + a.text()[:160]
+    assert sum(1 for e in a.events() if e["kind"] == "break") == 1
+    a.close()
+    return a
+
+
+def test_run_end_not_restored_after_crash(p, url):
+    """구간을 닫은 직후 앱이 죽어도 닫기 화면이 되살아나지 않는다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.tap('[data-tool="end"]')
+    a.num("160")
+    a.opt("ok")
+    a.opt("checked")
+    a.see('[data-t="close-run"]')
+    time.sleep(0.4)
+    a.page.evaluate(DROP_UI)
+    a.t("close-run")
+    a.poll("window.__bf.events().some(e => e.kind === 'run_end')")
+    reopen(a)
+    assert a.page.locator('[data-t="close-run"]').count() == 0, "닫기 화면이 되살아남"
+    a.close()
+    return a
+
+
+def test_morning_check_all_or_nothing(p, url):
+    """도구 점검은 네 기록이 한 번에 저장되고, 중간에 실패하면 아침 점검으로 돌아온다."""
+    a = App(p, url)
+    a.load_pack()
+    a.t("login-skip")
+    day_form(a)
+    a.t("phone-ok")
+    a.sign(True); a.keys("15")
+    a.sign(False); a.keys("16")
+    a.num("0"); a.num("265"); a.num("0"); a.num("100")
+    a.opt("yes")
+    a.see('[data-t="form-save"]')
+    time.sleep(0.4)
+    a.page.evaluate("""() => { const o = IDBObjectStore.prototype.add; IDBObjectStore.prototype.add = function (v) { if (v.data && v.data.tool === 'wheel') throw new Error('죽음'); return o.apply(this, arguments); }; }""")
+    a.t("form-save")
+    time.sleep(0.4)
+    reopen(a)
+    tools = sorted(e["data"]["tool"] for e in a.events() if e["kind"] == "tool_check")
+    assert tools == ["phone_setup"], tools
+    assert a.page.locator('[data-t="arrive"]').count() == 0, "점검 없이 측정으로 감: " + a.text()[:160]
+    a.errors.clear()
+    a.close()
+    return a
+
+
+def test_level_fail_retry_after_crash(p, url):
+    """수평계 실패 뒤 앱이 죽어도 다시 점검을 건너뛰지 않는다."""
+    a = App(p, url)
+    a.load_pack()
+    a.t("login-skip")
+    day_form(a)
+    a.t("phone-ok")
+    a.sign(True); a.keys("15")
+    a.sign(False); a.keys("25")
+    a.num("0"); a.num("265"); a.num("0"); a.num("100")
+    a.opt("yes")
+    a.see('[data-t="form-save"]')
+    time.sleep(0.4)
+    a.page.evaluate(DROP_UI)
+    a.t("form-save")
+    a.wait_text("수평계 다시 점검")
+    reopen(a)
+    a.wait_text("수평계 다시 점검")
+    assert a.page.locator('[data-t="arrive"]').count() == 0
+    a.close()
+    return a
+
+
+def test_bump_has_no_eye_value(p, url):
+    """턱 값 칸에 눈높이 숫자를 넣는 길이 없다. 매뉴얼은 값을 비우고 이유를 적으라고 한다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.see('[data-t="next-mark"]')
+    a.tap('[data-tool="bump"]')
+    a.num("30")
+    a.num("30")
+    a.opt("up")
+    a.opt("square")
+    a.num("100")
+    a.t("edit-tool")
+    a.see('[data-opt="caliper"]')
+    assert a.page.locator('[data-opt="eye"]').count() == 0
+    a.close()
+    return a
+
+
+def test_target_keeps_both_point(p, url):
+    """4를 4.6으로 재도 5 m 의무 지점이 다음 차례로 남고, 어느 예정을 잰 것인지 저장된다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.see('[data-t="next-mark"]')
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    a.see('[data-t="next-mark"]')
+    for _ in range(3):
+        a.tap('[data-adj="0.2"]')
+    a.fill_point("11")
+    a.save_point()
+    e = [x for x in a.events() if x["kind"] == "slope"][-1]
+    assert e["data"]["target"] == 4 and e["data"]["mark"] == 4.6, e["data"]
+    d = a.page.evaluate("window.__bf.draft()")
+    assert d["mark"] == 5 and d["both"], (d["mark"], d["both"])
+    a.close()
+    return a
+
+
+def other_site():
+    return custom_pack("other3.json", lambda b: b.update(site="fake2", name="둘째 대상지", net="othernet0000"))
+
+
+def test_day_form_can_switch_pack(p, url):
+    """날짜가 바뀐 오늘 준비 화면에서 다른 자료를 넣을 수 있고 지금 자료 이름이 보인다."""
+    from datetime import datetime, timedelta
+    other = other_site()
+    a = App(p, url)
+    a.setup_day()
+    a.see('[data-t="arrive"]')
+    a.page.clock.set_fixed_time(datetime.now() + timedelta(days=1))
+    reopen(a)
+    a.see('[data-opt="sunny"]')
+    assert "가짜 대상지" in a.text(), a.text()[:200]
+    a.load_pack(other)
+    a.see('[data-t="login-skip"]')
+    assert len(a.events()) == 0
+    a.close()
+    return a
+
+
+def test_empty_store_back_to_first_site(p, url):
+    """기록 있는 A에서 빈 B로 갔다가 A를 다시 넣으면 A 기록으로 돌아온다."""
+    other = other_site()
+    a = App(p, url)
+    a.setup_day()
+    a.see('[data-t="arrive"]')
+    n = len(a.events())
+    a.t("more")
+    a.load_pack(other)
+    a.see('[data-t="login-skip"]')
+    assert len(a.events()) == 0
+    a.t("login-skip")
+    a.see('[data-opt="sunny"]')
+    a.load_pack()
+    a.see('[data-t="login-skip"]')
+    time.sleep(0.3)
+    assert len(a.events()) == n, (len(a.events()), n)
+    a.close()
+    return a
+
+
+def test_switch_failure_stays_on_old_site(p, url):
+    """자료 바꾸기가 실패하면 앞 대상지 저장소에 계속 쓴다."""
+    other = other_site()
+    a = App(p, url)
+    a.setup_day()
+    a.see('[data-t="arrive"]')
+    n = len(a.events())
+    a.t("more")
+    a.see('input[data-t="pack-file"]')
+    a.page.evaluate("""() => { const o = IDBObjectStore.prototype.put; IDBObjectStore.prototype.put = function (v, k) { if (k === 'current') throw new Error('시험용 공간 부족'); return o.apply(this, arguments); }; }""")
+    a.load_pack(other)
+    a.wait_text("시험용 공간 부족")
+    a.t("more-close")
+    a.t("skip")
+    a.poll(f"window.__bf.events().length === {n + 1}")
+    reopen(a)
+    assert len(a.events()) == n + 1, (len(a.events()), n)
+    a.close()
+    return a
+
+
+def test_test_and_real_stores_separate(p, url):
+    """같은 대상지의 시험 자료와 실제 자료는 기록이 섞이지 않는다."""
+    real = custom_pack("real.json", lambda b: b.update(test=False))
+    a = App(p, url)
+    a.setup_day()
+    a.see('[data-t="arrive"]')
+    a.t("more")
+    a.load_pack(real)
+    a.see('[data-t="login-skip"]')
+    time.sleep(0.3)
+    assert len(a.events()) == 0, len(a.events())
+    a.close()
+    return a
+
+
+def test_single_phone_wording(p, url):
+    """폰 한 대로 재므로 화면에 예비 폰과 두 폰 항목이 없다."""
+    a = App(p, url)
+    a.load_pack()
+    a.t("login-skip")
+    a.see('[data-opt="sunny"]')
+    assert "예비" not in a.text(), a.text()[:300]
+    day_form(a)
+    a.see('[data-t="phone-ok"]')
+    tx = a.text()
+    assert "예비" not in tx and "두 폰" not in tx, tx[:500]
+    a.close()
+    return a
+
+
+def test_swap_role_saves_file_without_share(p, url):
+    """역할을 바꾸면 보낼 폰을 묻지 않고 백업 파일을 폰에 저장한다."""
+    a = App(p, url)
+    a.setup_day()
+    a.see('[data-t="more"]')
+    a.page.evaluate("""() => { window.__shared = 0; navigator.canShare = () => true; navigator.share = () => { window.__shared += 1; return Promise.resolve(); }; }""")
+    a.t("more")
+    with a.page.expect_download() as dl:
+        a.t("swap-role")
+    assert dl.value.suggested_filename.endswith(".txt")
+    assert a.page.evaluate("window.__shared") == 0
+    a.poll("window.__bf.events().some(e => e.kind === 'role')")
     a.close()
     return a
 

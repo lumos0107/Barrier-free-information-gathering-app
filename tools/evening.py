@@ -86,6 +86,147 @@ def map_position(map_len, mark, start, end, breaks, second, reached, long_value,
     return s, long_value
 
 
+# 재는 지점과 못 잰 항목. 앱의 calc.js와 같은 규칙이고 같은 시험값(calc_cases.json)을 통과한다 --------
+def round1(x):
+    return math.floor(x * 10 + 0.5) / 10
+
+
+def round2(x):
+    return math.floor(x * 100 + 0.5) / 100
+
+
+def in_fine(m, fine):
+    return any(m > a + EPS and m <= b + EPS for a, b in fine)
+
+
+def plan_marks(length, fine, stop, rules, inclines=None):
+    S = rules["slope"]
+    fine = fine or []
+
+    def point(m, kind="gap", both=False, cross=True):
+        return {"mark": m, "kind": kind, "both": both, "cross": cross}
+
+    if length < S["short_skip"]:
+        return [point(round1(length / 2))] if inclines and any(v > 0 for v in inclines) else []
+    if length < S["short_mid"]:
+        return [point(round1(length / 2))]
+    limit = length if stop is None else stop
+    out = {}
+    m = S["first"]
+    while m < limit - EPS:
+        if not in_fine(m, fine):
+            out[round1(m)] = point(round1(m))
+        m += S["step"]
+    for a, b in fine:
+        top = min(b, limit)
+        for step in (S["fine_step"], S["fine_both_step"]):
+            m = math.ceil((a + EPS) / step) * step
+            while m <= top + EPS and m < limit - EPS:
+                if m > 0:
+                    q = m / S["fine_both_step"]
+                    multiple = abs(q - math.floor(q + 0.5)) < EPS
+                    out[round1(m)] = point(round1(m), "fine", multiple, multiple)
+                m += step
+    items = sorted(out.values(), key=lambda p: p["mark"])
+    if not items:
+        return [point(round1(limit / 2))]
+    if limit - items[-1]["mark"] > S["end_gap"] + EPS:
+        items.append(point(round1(limit - S["end_back"]), "end"))
+    return items
+
+
+def pending_marks(plan, saved, length, fine, rules, stop=None):
+    S = rules["slope"]
+    fine = fine or []
+    limit = length if stop is None else stop
+
+    def near(a, b):
+        return abs(a - b) <= S["match_tol"] + EPS
+
+    pool = [dict(p) for p in plan]
+    for p in saved:
+        if p.get("kind") == "more" or p.get("long") is None or in_fine(p["mark"], fine) or not at_least(abs(p["long"]), S["more_from"]):
+            continue
+        for d in (-S["more_dist"], S["more_dist"]):
+            m = round1(p["mark"] + d)
+            if m > EPS and m < limit - EPS and not any(near(x["mark"], m) for x in pool):
+                pool.append({"mark": m, "kind": "more", "both": False, "cross": True})
+    used = set()
+
+    def take(p):
+        if p.get("kind") == "end":
+            for i, x in enumerate(pool):
+                if i not in used and x["kind"] == "end":
+                    return i
+        if p.get("target") is not None:
+            for i, x in enumerate(pool):
+                if i not in used and abs(x["mark"] - p["target"]) < 1e-6:
+                    if near(x["mark"], p["mark"]):
+                        return i
+                    break
+        best = -1
+        for i, x in enumerate(pool):
+            if i in used or not near(x["mark"], p["mark"]):
+                continue
+            if x.get("both") and p.get("n") is not None and p["n"] < 2:
+                continue
+            if best < 0 or abs(x["mark"] - p["mark"]) < abs(pool[best]["mark"] - p["mark"]):
+                best = i
+        return best
+
+    for p in saved:
+        if p.get("added"):
+            continue
+        i = take(p)
+        if i >= 0:
+            used.add(i)
+    return sorted((x for i, x in enumerate(pool) if i not in used), key=lambda x: x["mark"])
+
+
+def geo_for(seg, frm):
+    fine = [[a, b] if frm == seg["a"] else [round2(seg["len"] - b), round2(seg["len"] - a)] for a, b in (seg.get("fine") or [])]
+    st = seg.get("stop")
+    return {"len": seg["len"], "fine": sorted(fine, key=lambda x: x[0]), "stop": st["m"] if st and st.get("from") == frm else None, "inclines": seg.get("inclines")}
+
+
+def left_marks(r, geo, rules):
+    if r["result"] not in ("ok", "stopped"):
+        return []
+    plan = plan_marks(geo["len"], geo["fine"], geo["stop"], rules, geo.get("inclines"))
+    breaks = r["breaks"]
+    saved = []
+    for p in r["points"]:
+        if p.get("values"):
+            saved.append({"mark": continued(p["mark"], r["start"], breaks[: p.get("breakCount", len(breaks))]), "long": long_route(p["values"], p.get("method") or "one"), "kind": p.get("kind"), "added": p.get("added"), "target": p.get("target"), "n": len(p["values"])})
+    left = pending_marks(plan, saved, geo["len"], geo["fine"], rules, geo["stop"])
+    if r["end"] is None:
+        return [] if r["result"] == "stopped" else left
+    measured = continued(r["end"], r["start"], breaks)
+    return [p for p in left if p["mark"] < measured - rules["slope"]["match_tol"] - EPS]
+
+
+def run_missing(r, geo, rules):
+    """구간 측정의 못 잰 항목. 저장한 값이 아니라 지금의 원값으로 계산한다(매뉴얼 1장 나 5, 9장 다)."""
+    if r["result"] not in ("ok", "stopped"):
+        return []
+    out = []
+    if not any(p.get("values") for p in r["points"]):
+        out.append("slope")
+    elif left_marks(r, geo, rules):
+        out.append("slope_points")
+    if geo["len"] >= rules["width"]["skip_len"] and not any(b.get("type") == "width_rep" and b.get("value") is not None for b in r["barriers"]):
+        out.append("width")
+    if not r["surfaces"]:
+        out.append("surface")
+    if any(b.get("unread") for b in r["barriers"]):
+        out.append("barrier_value")
+    if any(p.get("no_cross") and not p.get("cross") for p in r["points"]):
+        out.append("cross")
+    if r.get("no_barrier") == "not_looked":
+        out.append("barrier_look")
+    return out
+
+
 # 사건 쌓기 ----------------------------------------------------------------------
 def time_of(e):
     return datetime.fromisoformat(e["at"].replace("Z", "+00:00")).timestamp()
@@ -121,12 +262,12 @@ def fold(events):
         k = e["kind"]
         if k in ("fix", "void", "track"):
             continue
+        if e["id"] in voided:
+            continue
         if k == "photo":
             of = e["data"].get("of")
             if of:
                 S["photos"][of] = S["photos"].get(of, 0) + 1
-            continue
-        if e["id"] in voided:
             continue
         d = dict(e["data"])
         for f in fixes.get(e["id"], []):
@@ -135,6 +276,7 @@ def fold(events):
                 d.pop(key, None)
         d["_id"], d["_at"], d["_gps"], d["_ord"] = e["id"], e["at"], e.get("gps"), e.get("ord")
         d["_rev"] = 1 + len(fixes.get(e["id"], []))
+        d["_level_fail"] = level_fail
         if k == "day":
             S["day"] = d
             S["days"].append(d)
@@ -194,7 +336,8 @@ def seg_info(S, pack, seg_id):
         if not n:
             return None
         return {"seg": seg_id, "a": f"{seg_id}a", "b": f"{seg_id}b", "len": n["len"], "xy": n["xy"], "new": True}
-    return pack["segs"][seg_id]
+    segs = pack["segs"]
+    return segs[seg_id] if 0 <= seg_id < len(segs) else None
 
 
 def run_status(r):
@@ -303,26 +446,22 @@ def clip(s, seg_len):
     return s, False
 
 
-def value_missing(r, seg, rules):
-    """못 잰 값을 잰 것으로 치지 않는다. 앱의 구간 끝 판정과 같은 규칙(매뉴얼 1장 나 5, 9장 다)."""
-    out = set(r["missing"])
-    if r["result"] not in VALUE_RESULTS:
-        return out
-    valued = [p for p in r["points"] if p.get("values")]
-    if seg["len"] >= rules["slope"]["short_skip"] and r["points"] and not valued:
-        out.add("slope")
-    if any(not p.get("values") for p in r["points"]):
-        out.add("slope_points")
-    if seg["len"] >= rules["width"]["skip_len"] and not any(b.get("type") == "width_rep" and b.get("value") is not None for b in r["barriers"]):
-        out.add("width")
-    if any(b.get("unread") for b in r["barriers"]):
-        out.add("barrier_value")
-    return out
+def recheck_missing(S, pack):
+    """닫은 구간의 못 잰 항목을 지금의 원값으로 다시 계산한다. 사람이 더한 항목(other)만 저장값을 쓴다."""
+    for r in S["runs"].values():
+        seg = seg_info(S, pack, r["seg"]) if r["closed"] else None
+        if seg:
+            r["missing"] = run_missing(r, geo_for(seg, r["from"]), pack["rules"]) + [m for m in r["missing"] if m == "other"]
+
+
+def fail_flags(rec, retro):
+    """시설 기울기와 차량 진출입부에도 점검 실패를 붙인다(매뉴얼 10장 나 4)."""
+    return ["tool_fail"] if rec.get("_level_fail") or any(a <= ord_of(rec) <= b for a, b in retro) else []
 
 
 def apply_fixes(events, fixes, pack):
     """저녁에 사람이 고친 값을 사건으로 더한다. 원본 사건은 건드리지 않는다. 이유가 없거나 없는 사건을 가리키면 멈춘다."""
-    ids = {e["id"] for e in events}
+    kinds = {e["id"]: e["kind"] for e in events}
     top = max((order_of(e) for e in events), default=0)
     at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     out = list(events)
@@ -330,13 +469,17 @@ def apply_fixes(events, fixes, pack):
         target = x.get("of") or x.get("void")
         if not str(x.get("why") or "").strip():
             raise ValueError(f"저녁 고침에 이유(why)가 없습니다: {target}")
-        if target not in ids:
+        if target not in kinds:
             raise ValueError(f"저녁 고침이 없는 사건을 가리킵니다: {target}")
         kind = "fix" if x.get("of") else "void"
         data = {"of": target, "why": x["why"]}
-        if kind == "fix":
+        ev = {"id": f"evening-{i}", "seq": i, "ord": top + i, "kind": kind, "at": at, "dev": "evening", "app": "evening", "site": pack["site"], "test": bool(pack.get("test")), "net": pack["net"], "pack": pack.get("hash"), "rules": pack["rules"].get("version"), "data": data}
+        if kind == "fix" and kinds[target] == "run_start":
+            # 낮에 run_edit로 고친 값 뒤에 적용되도록 구간 고침 사건으로 넣는다
+            ev.update(kind="run_edit", run=target, data={"changes": x.get("data") or {}, "why": x["why"]})
+        elif kind == "fix":
             data.update(data=x.get("data") or {}, unset=x.get("unset") or [])
-        out.append({"id": f"evening-{i}", "seq": i, "ord": top + i, "kind": kind, "at": at, "dev": "evening", "app": "evening", "site": pack["site"], "test": bool(pack.get("test")), "net": pack["net"], "pack": pack.get("hash"), "rules": pack["rules"].get("version"), "data": data})
+        out.append(ev)
     return out
 
 
@@ -360,11 +503,21 @@ def measured_len(r):
     return continued(r["end"], r["start"], r["breaks"])
 
 
-def choose_runs(S, runs=None):
+def choose_runs(S, pack, runs=None):
     """구간마다 경로 값에 쓸 구간 측정을 고른다.
-    닫힌 측정 가운데 값을 잰 것(ok, 끝까지 못 감)만 고르고, 경로 줄, 다 잼(ok이고 못 잰 항목 없음), 잰 길이, 나중 순이다.
+    닫힌 측정 가운데 값을 잰 것(ok, 끝까지 못 감)만 고르고, 경로 줄, 길 맞음, 길이 경고 없음, 못 잰 항목 없음, 나중 순이다.
+    잰 길이는 끝까지 못 감끼리만 비교한다. 길이 경고로 다시 잰 구간에서 앞의 틀린 측정이 뽑히지 않게 한다.
     길 아님, 출입 금지, 일시 막힘은 값을 지우지 않고 구간 상태(blocked)로 얹는다. runs: {구간: 측정 번호}로 사람이 바꾼다."""
     runs = {str(k): v for k, v in (runs or {}).items()}
+    for k, v in runs.items():
+        r = S["runs"].get(v)
+        if not r or str(r["seg"]) != k or not r["closed"]:
+            raise ValueError(f"고른 측정을 쓸 수 없습니다(없거나 다른 구간이거나 닫히지 않음): 구간 {k}, 측정 {v}")
+
+    def long_warn(x):
+        seg = seg_info(S, pack, x["seg"])
+        return bool(seg) and x["result"] == "ok" and x["end"] is not None and length_mismatch(measured_len(x), seg["len"], pack["rules"])
+
     by_seg = {}
     for rid in S["order"]:
         by_seg.setdefault(S["runs"][rid]["seg"], []).append(S["runs"][rid])
@@ -380,7 +533,7 @@ def choose_runs(S, runs=None):
             continue
         cand = [r for r in closed if r["result"] in VALUE_RESULTS]
         if cand:
-            rank = lambda x: (x["route_line"], x["result"] == "ok" and not x["missing"], measured_len(x), S["order"].index(x["id"]))
+            rank = lambda x: (x["route_line"], x["result"] == "ok", not long_warn(x), not x["missing"], measured_len(x) if x["result"] == "stopped" else 0.0, S["order"].index(x["id"]))
             best[seg] = max(cand, key=rank)
         elif closed:
             best[seg] = closed[-1]
@@ -396,9 +549,16 @@ def route_input(events, pack, overrides=None, allow_test=False, runs=None):
         raise ValueError(f"저녁 확인 값에 이유(why)가 없습니다: {no_why[:5]}")
     S = fold(events)
     check_events(S, pack, allow_test)
+    recheck_missing(S, pack)
+    known = {p["_id"] for r in S["runs"].values() for p in r["points"]}
+    for k, o in overrides.items():
+        if k not in known:
+            raise ValueError(f"저녁 확인 값이 없는 지점을 가리킵니다: {k}")
+        if "long" in o and (isinstance(o["long"], bool) or not isinstance(o["long"], (int, float)) or not math.isfinite(o["long"])):
+            raise ValueError(f"저녁 확인 값이 숫자가 아닙니다: {k}")
     rules = pack["rules"]
     retro = retro_fail_from(S)
-    best, blocked = choose_runs(S, runs)
+    best, blocked = choose_runs(S, pack, runs)
     segments, values, barriers, surfaces = [], [], [], []
     for seg_id, r in best.items():
         seg = seg_info(S, pack, seg_id)
@@ -406,8 +566,8 @@ def route_input(events, pack, overrides=None, allow_test=False, runs=None):
             continue
         second = r["from"] == seg["b"]
         reached = r["result"] == "ok" and r["end"] is not None
-        missing = sorted(value_missing(r, seg, rules))
-        status = "open" if not r["closed"] else ("partial" if r["result"] == "ok" and missing else run_status(r))
+        missing = sorted(r["missing"])
+        status = run_status(r)
         reached_m = None
         if r["end"] is not None:
             reached_m = continued(r["end"], r["start"], r["breaks"])
@@ -417,8 +577,8 @@ def route_input(events, pack, overrides=None, allow_test=False, runs=None):
             "other_runs": [x for x in S["order"] if S["runs"][x]["seg"] == seg_id and x != r["id"]],
             "blocked": blocked.get(seg_id), "no_barrier": r.get("no_barrier"), "twin": r.get("twin"),
         })
-        # 길 아님으로 닫은 측정의 값은 경로 값에 넣지 않는다(새 길로 옮기지 못한 값)
-        if r["result"] == "not_path":
+        # 닫지 않은 측정과 길 아님으로 닫은 측정의 값은 경로 값에 넣지 않는다
+        if not r["closed"] or r["result"] == "not_path":
             continue
         for p in r["points"]:
             method = p.get("method") or "one"
@@ -427,27 +587,32 @@ def route_input(events, pack, overrides=None, allow_test=False, runs=None):
             cross_vals = p.get("cross") or []
             cr = cross_route(cross_vals, "both" if len(cross_vals) == 2 else method)
             flags = point_flags(p, retro, rules)
-            if p["_id"] in overrides:
-                o = overrides[p["_id"]]
-                lg = o.get("long", lg)
+            # 확인 값이 있어야 경계와 부호 표시가 풀린다. 이유만 있으면 불확실로 둔다(매뉴얼 9장 마 3)
+            o = overrides.get(p["_id"])
+            confirmed = o is not None and "long" in o
+            if confirmed:
+                lg = o["long"]
                 flags = [f for f in flags if f not in ("boundary", "both_sign")] + ["evening"]
             mb = r["breaks"][: p.get("breakCount", len(r["breaks"]))]
             s, slg = map_position(seg["len"], p["mark"], r["start"], r["end"], r["breaks"], second, reached, lg, mb)
             s, out = clip(s, seg["len"])
             if out:
                 flags = flags + ["out_of_seg"]
-            unc = uncertain_modes(slg, flags, raw if p["_id"] not in overrides else [], rules)
+            unc = uncertain_modes(slg, flags, [] if confirmed else raw, rules)
             if unc:
                 flags = flags + ["uncertain"]
             values.append({
                 "event": p["_id"], "seg": seg_id, "s": s, "long": slg, "long_pct": math.tan(math.radians(slg)) * 100 if slg is not None else None,
                 "cross": cr, "cross_pct": math.tan(math.radians(cr)) * 100 if cr is not None else None, "kind": p.get("kind"), "method": method,
-                "raw": p.get("values"), "raw_cross": cross_vals, "mark": p["mark"], "flags": flags, "uncertain_for": unc, "at": p["_at"], "rev": p["_rev"],
+                "raw": p.get("values"), "raw_cross": cross_vals, "mark": p["mark"], "flags": flags, "uncertain_for": unc, "at": p["_at"], "rev": p["_rev"], "evening_why": o["why"] if o else None,
             })
         for b in r["barriers"]:
             ends = sorted(x for x in (clip(run_place(r, seg, b.get("mark"), b), seg["len"])[0], clip(run_place(r, seg, b.get("mark_end"), b), seg["len"])[0]) if x is not None)
             item = {**{k: v for k, v in b.items() if not k.startswith("_")}, "event": b["_id"], "seg": seg_id, "s": ends[0] if ends else None, "s_end": ends[1] if len(ends) > 1 else None, "walk_second": second, "at": b["_at"], "rev": b["_rev"]}
             item.update(barrier_route(b, rules))
+            item["flags"] = fail_flags(b, retro) if b.get("type") == "driveway" and b.get("cross") is not None else []
+            if item["flags"]:
+                item["uncertain_for"] = ["manual", "power"]
             barriers.append(item)
         for b in r["surfaces"]:
             surfaces.append({**{k: v for k, v in b.items() if not k.startswith("_")}, "event": b["_id"], "seg": seg_id, "s": clip(run_place(r, seg, b.get("mark"), b), seg["len"])[0], "at": b["_at"]})
@@ -463,6 +628,8 @@ def route_input(events, pack, overrides=None, allow_test=False, runs=None):
     for f in S["facilities"]:
         item = {k: v for k, v in f.items() if not k.startswith("_")}
         item.update(event=f["_id"], at=f["_at"], gps=f.get("_gps"), **placed(f))
+        item["flags"] = fail_flags(f, retro) if any(f.get(k) is not None for k in ("slope", "slope_low", "slope_mid", "slope_top")) else []
+        item["uncertain_for"] = ["manual", "power"] if item["flags"] else []
         facilities.append(item)
     map_checks = []
     for m in S["map_checks"]:
@@ -505,6 +672,7 @@ def local_day(iso):
 
 def inspect(events, pack):
     S = fold(events)
+    recheck_missing(S, pack)
     rules = pack["rules"]
     R, Ck = rules["range"], rules["check"]
     issues = []
@@ -555,7 +723,7 @@ def inspect(events, pack):
                 add("length", f"구간 {r['seg']}: 잰 길이 {measured:.1f} m, 지도 {seg['len']:.1f} m", seg=r["seg"], run=rid)
         elif measured is not None and r["result"] == "stopped" and measured > seg["len"] + Ck["len_m"] + EPS:
             add("length", f"구간 {r['seg']}: 끝까지 못 감인데 잰 길이 {measured:.1f} m가 지도 {seg['len']:.1f} m보다 깁니다", seg=r["seg"], run=rid)
-        for m in sorted(value_missing(r, seg, rules)):
+        for m in sorted(r["missing"]):
             add("missing", f"구간 {r['seg']} 못 잰 항목: {m}", seg=r["seg"], run=rid)
         prev_mark = None
         pts = []
@@ -629,7 +797,7 @@ def inspect(events, pack):
             add("photos", f"{tag}: 사진 요구 {need}장, 찍음 {got}장", seg=seg, run=rid, event=i)
 
     # 구간 사이 공백: 걷는 순서의 이웃 구간에서 앞 구간 끝 공백 + 안 잰 구간 + 다음 구간 시작 공백
-    best, _ = choose_runs(S)
+    best, _ = choose_runs(S, pack)
     walks = pack.get("walks") or {}
     choice = (S["route_choice"] or {}).get("route") or "11"
     carry = None

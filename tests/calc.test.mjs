@@ -23,8 +23,8 @@ for (const c of cases.plan) {
 
 for (const c of cases.pending) {
   test(`남은 지점: ${c.name}`, () => {
-    const plan = c.plan.map((m) => ({ mark: m, kind: c.fine.length ? "fine" : "gap", both: false, cross: true }));
-    const saved = c.saved.map(([mark, long, kind, added]) => ({ mark, long, kind, added }));
+    const plan = c.plan.map((m) => (Array.isArray(m) ? { mark: m[0], kind: m[1], both: !!m[2], cross: true } : { mark: m, kind: c.fine.length ? "fine" : "gap", both: false, cross: true }));
+    const saved = c.saved.map(([mark, long, kind, added, target, n]) => ({ mark, long, kind, added, target, n }));
     const got = C.pendingMarks(plan, saved, c.len, c.fine, rules, c.stop ?? null).map((p) => [p.mark, p.kind]);
     assert.deepEqual(got, c.want);
   });
@@ -285,4 +285,48 @@ test("닫은 측정을 다른 구간으로 옮기면 옛 구간은 남은 측정
   ]);
   assert.equal(s.segStatus[7], "done");
   assert.equal(s.segStatus[9], "temp_block");
+});
+
+for (const c of cases.run_missing) {
+  test(`못 잰 항목: ${c.name}`, () => {
+    const run = { ...c.run, points: c.run.points.map((p) => ({ ...p, long: C.longRoute(p.values, p.method) })) };
+    assert.deepEqual(C.runMissing(run, c.geo, rules), c.want);
+  });
+}
+
+const geo30 = () => ({ len: 30, fine: [], stop: null, inclines: [] });
+const closedRun = (end, result, missing = []) => [
+  ev("r1", 1, "run_start", { seg: 7, from: 3, start: 0 }),
+  ev("p1", 2, "slope", { mark: 5, values: [1.0], method: "one", cross: [1.0], kind: "gap" }, { run: "r1" }),
+  ev("w1", 3, "barrier", { type: "width_rep", mark: 0, value: 180 }, { run: "r1" }),
+  ev("s1", 4, "surface", { mark: 0, material: "block", grade: "good" }, { run: "r1" }),
+  ev("e1", 5, "run_end", { end, result, missing }, { run: "r1" }),
+];
+
+test("닫은 구간의 결과를 고치면 못 잰 항목과 상태를 다시 계산한다", () => {
+  const s = C.foldEvents([...closedRun(12, "stopped"), ev("f1", 6, "fix", { of: "e1", data: { end: 30, result: "ok" } }, { run: "r1" })], rules, null, geo30);
+  assert.deepEqual(s.runs.r1.missing, ["slope_points"]);
+  assert.equal(s.segStatus[7], "partial");
+});
+
+test("못 잰 항목을 채우면 저장값이 낡아도 상태가 끝이 된다", () => {
+  const evs = closedRun(10, "ok", ["slope_points"]);
+  const s = C.foldEvents(evs, rules, null, () => ({ len: 10, fine: [], stop: null, inclines: [] }));
+  assert.deepEqual(s.runs.r1.missing, []);
+  assert.equal(s.segStatus[7], "done");
+});
+
+test("사람이 더한 못 잰 항목은 다시 계산해도 남는다", () => {
+  const s = C.foldEvents(closedRun(12, "stopped", ["other"]), rules, null, geo30);
+  assert.deepEqual(s.runs.r1.missing, ["other"]);
+});
+
+test("닫은 뒤 지점을 모두 지우면 못 잰 항목이 된다", () => {
+  const s = C.foldEvents([...closedRun(12, "stopped"), ev("v1", 6, "void", { of: "p1" }, { run: "r1" })], rules, null, geo30);
+  assert.deepEqual(s.runs.r1.missing, ["slope"]);
+});
+
+test("지운 사진은 세지 않는다", () => {
+  const s = C.foldEvents([ev("h1", 1, "photo", { of: "x" }), ev("v1", 2, "void", { of: "h1" })]);
+  assert.equal(s.photos.x || 0, 0);
 });
