@@ -1,7 +1,41 @@
 // 폰 저장. 기록 1건이 IndexedDB 행 1개다. 쓰기가 디스크까지 끝난 뒤에만 호출자에게 돌려준다.
-const DB_NAME = "bf-gather-v1";
+// 대상지(자료의 site와 연결망)마다 저장소를 따로 둔다. 다른 자료를 넣어도 앞 대상지 기록은 그대로 남는다.
+export const DEFAULT_NAME = "bf-gather-v1";
 const DB_VER = 1;
 let db = null;
+let dbName = DEFAULT_NAME;
+
+const MAP_KEY = "bf-stores";
+const CUR_KEY = "bf-store-cur";
+const readMap = () => { try { return JSON.parse(localStorage.getItem(MAP_KEY) || "{}"); } catch { return {}; } };
+
+export const siteKey = (pack) => `${pack.site}_${pack.net}`;
+export const currentName = () => dbName;
+
+// 시작할 때 열 저장소 이름. 처음 쓰는 폰은 기본 이름이다.
+export function startName() {
+  const cur = localStorage.getItem(CUR_KEY);
+  return (cur && readMap()[cur]) || DEFAULT_NAME;
+}
+
+// 이 대상지의 저장소 이름을 정하고 지금 대상지로 적는다.
+export function claim(key, name) {
+  const map = readMap();
+  for (const k of Object.keys(map)) if (map[k] === name && k !== key) delete map[k];
+  map[key] = name;
+  localStorage.setItem(MAP_KEY, JSON.stringify(map));
+  localStorage.setItem(CUR_KEY, key);
+}
+
+export function nameFor(key) {
+  return readMap()[key] || `${DEFAULT_NAME}-${key}`;
+}
+
+export async function switchTo(name) {
+  if (db) db.close();
+  db = null;
+  await openStore(name);
+}
 
 function req(r) {
   return new Promise((ok, no) => {
@@ -13,15 +47,18 @@ function req(r) {
 function done(tx) {
   return new Promise((ok, no) => {
     tx.oncomplete = () => ok();
-    tx.onerror = () => no(tx.error);
-    tx.onabort = () => no(tx.error || new Error("저장 취소됨"));
+    // 요청 하나가 실패하면 tx.error가 아직 비어 있을 수 있다. 그 요청의 오류를 넘긴다.
+    tx.onerror = (ev) => no(tx.error || (ev && ev.target && ev.target.error) || new Error("저장 실패"));
+    tx.onabort = (ev) => no(tx.error || (ev && ev.target && ev.target.error) || new Error("저장 취소됨"));
   });
 }
 
-export async function openStore() {
-  if (db) return db;
+export async function openStore(name = dbName) {
+  if (db && name === dbName) return db;
+  if (db) db.close();
+  dbName = name;
   db = await new Promise((ok, no) => {
-    const r = indexedDB.open(DB_NAME, DB_VER);
+    const r = indexedDB.open(name, DB_VER);
     r.onupgradeneeded = () => {
       const d = r.result;
       d.createObjectStore("events", { keyPath: "id" });
@@ -56,7 +93,8 @@ export async function addEvent(make) {
   const seq = ((await req(meta.get("seq"))) || 0) + 1;
   meta.put(seq, "seq");
   const ev = make(seq);
-  tx.objectStore("events").put(ev);
+  // add: 같은 번호가 이미 있으면 실패한다. 저장 직후 앱이 죽어 옛 초안이 돌아와도 원값을 덮어쓰지 않는다.
+  tx.objectStore("events").add(ev);
   tx.objectStore("pending").put({ id: ev.id });
   await done(tx);
   return ev;
@@ -64,6 +102,24 @@ export async function addEvent(make) {
 
 export async function allEvents() {
   return req(db.transaction("events").objectStore("events").getAll());
+}
+
+// 시작이 실패했을 때 쓰는 꺼내기. getAll 대신 커서로 한 건씩 읽는다.
+export async function rawEvents(name = dbName) {
+  const d = await new Promise((ok, no) => {
+    const r = indexedDB.open(name);
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => no(r.error);
+  });
+  return new Promise((ok, no) => {
+    const out = [];
+    const r = d.transaction("events").objectStore("events").openCursor();
+    r.onsuccess = () => {
+      const c = r.result;
+      if (c) { out.push(c.value); c.continue(); } else ok(out);
+    };
+    r.onerror = () => no(r.error);
+  });
 }
 
 // 복원과 내려받기. 이미 있는 사건은 건드리지 않는다.

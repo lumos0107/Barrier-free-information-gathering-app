@@ -1,102 +1,1157 @@
 {
-  "long_route": [
-    { "name": "1번은 그 값", "values": [4.7], "method": "one", "want": 4.7 },
-    { "name": "양 끝은 부호를 포함한 평균", "values": [4.7, 4.6], "method": "both", "want": 4.65 },
-    { "name": "양 끝 부호가 다르면 평균이 작아짐", "values": [0.4, -0.2], "method": "both", "want": 0.1 },
-    { "name": "세 자리는 크기가 가운데인 값", "values": [5.1, -2.0, 3.0], "method": "three", "want": 3.0 },
-    { "name": "세 자리 가운데 크기가 음수면 부호 유지", "values": [-3.0, 5.1, 2.0], "method": "three", "want": -3.0 },
-    { "name": "세 자리 값이 같으면 그 값", "values": [2.0, 2.0, -2.0], "method": "three", "want": 2.0 }
-  ],
-  "cross_route": [
-    { "name": "1번은 그 값", "values": [1.1], "method": "one", "want": 1.1 },
-    { "name": "양 끝은 크기 평균", "values": [2.2, 2.4], "method": "both", "want": 2.3 },
-    { "name": "세 자리는 가운데 자리 값", "values": [1.0, 1.5, 2.0], "method": "three", "want": 1.5 },
-    { "name": "세 자리에서 1개만 재면 그 값", "values": [1.2], "method": "three", "want": 1.2 }
-  ],
-  "at_least": [
-    { "name": "부동소수 경계 3.2", "value": 3.1999999999999997, "limit": 3.2, "want": true },
-    { "name": "부동소수 경계 4.7", "value": 4.700000000000001, "limit": 4.7, "want": true },
-    { "name": "아래", "value": 3.1, "limit": 3.2, "want": false }
-  ],
-  "boundary": [
-    { "name": "4.8 양쪽에 걸침", "values": [4.0, 5.0, 4.5], "limits": [4.8, 5.8], "want": true },
-    { "name": "모두 4.8 위 5.8 아래", "values": [5.0, 5.2, 5.6], "limits": [4.8, 5.8], "want": false },
-    { "name": "5.8 양쪽에 걸침", "values": [5.0, 5.2, 5.9], "limits": [4.8, 5.8], "want": true },
-    { "name": "부호는 보지 않음", "values": [-4.0, 5.0, 3.0], "limits": [4.8, 5.8], "want": true },
-    { "name": "모두 아래", "values": [1.0, 2.0, 3.0], "limits": [4.8, 5.8], "want": false },
-    { "name": "경계값 자체는 위로 본다", "values": [4.7, 4.8, 4.75], "limits": [4.8, 5.8], "want": true }
-  ],
-  "continued": [
-    { "name": "끊김 없음", "mark": 12.0, "start": 0, "breaks": [], "want": 12.0 },
-    { "name": "시작값 빼기", "mark": 112.0, "start": 100, "breaks": [], "want": 12.0 },
-    { "name": "중간 초기화", "mark": 5.0, "start": 0, "breaks": [{ "orig": 20.0, "now": 0.0 }], "want": 25.0 },
-    { "name": "끊김 두 번", "mark": 3.0, "start": 10, "breaks": [{ "orig": 30.0, "now": 0.0 }, { "orig": 8.0, "now": 1.0 }], "want": 30.0 }
-  ],
-  "plan": [
-    { "name": "52 m는 5, 15, 25, 35, 45와 끝 앞", "len": 52, "fine": [], "stop": null,
-      "want": [[5,"gap",false,true],[15,"gap",false,true],[25,"gap",false,true],[35,"gap",false,true],[45,"gap",false,true],[51,"end",false,true]] },
-    { "name": "16 m", "len": 16, "fine": [], "stop": null,
-      "want": [[5,"gap",false,true],[15,"gap",false,true]] },
-    { "name": "10 m는 끝 앞 없음(딱 5 m)", "len": 10, "fine": [], "stop": null,
-      "want": [[5,"gap",false,true]] },
-    { "name": "5 m보다 짧으면 가운데 1곳", "len": 4, "fine": [], "stop": null,
-      "want": [[2,"gap",false,true]] },
-    { "name": "3 m보다 짧으면 없음", "len": 2.9, "fine": [], "stop": null, "want": [] },
-    { "name": "1순위 16 m 전체", "len": 16, "fine": [[0,16]], "stop": null,
-      "want": [[2,"fine",false,false],[4,"fine",false,false],[5,"fine",true,true],[6,"fine",false,false],[8,"fine",false,false],[10,"fine",true,true],[12,"fine",false,false],[14,"fine",false,false],[15,"fine",true,true]] },
-    { "name": "앞 9.3 m만 1순위인 41.2 m", "len": 41.2, "fine": [[0,9.3]], "stop": null,
-      "want": [[2,"fine",false,false],[4,"fine",false,false],[5,"fine",true,true],[6,"fine",false,false],[8,"fine",false,false],[15,"gap",false,true],[25,"gap",false,true],[35,"gap",false,true],[40.2,"end",false,true]] },
-    { "name": "계획된 중단 9.5 m", "len": 84.4, "fine": [], "stop": 9.5,
-      "want": [[5,"gap",false,true]] }
-  ],
-  "pending": [
-    { "name": "더한 지점은 뒤쪽 먼저", "plan": [5,15,25], "saved": [[5,1.0,"gap"],[15,3.5,"gap"]], "len": 30, "fine": [],
-      "want": [[10,"more"],[20,"more"],[25,"gap"]] },
-    { "name": "구간 밖 더한 지점은 없음", "plan": [5], "saved": [[5,3.2,"gap"]], "len": 8, "fine": [],
-      "want": [] },
-    { "name": "이미 잰 자리는 다시 안 잼", "plan": [5,15,25], "saved": [[5,3.5,"gap"],[10,1.0,"more"],[15,3.5,"gap"]], "len": 30, "fine": [],
-      "want": [[20,"more"],[25,"gap"]] },
-    { "name": "더한 지점 값은 더 늘리지 않음", "plan": [5,15], "saved": [[5,1.0,"gap"],[15,1.0,"gap"],[20,4.0,"more"]], "len": 30, "fine": [],
-      "want": [] },
-    { "name": "표시값이 조금 달라도 잰 것으로 봄", "plan": [5,15], "saved": [[5.3,1.0,"gap"]], "len": 20, "fine": [],
-      "want": [[15,"gap"]] },
-    { "name": "1순위 범위에서는 더 재기 끔", "plan": [2,4,5], "saved": [[2,4.0,"fine"]], "len": 6, "fine": [[0,6]],
-      "want": [[4,"fine"],[5,"fine"]] }
-  ],
-  "recheck": [
-    { "name": "앞뒤 4.5 재측정", "long": 4.5, "fine_both": false, "want": true },
-    { "name": "앞뒤 5.0 재측정", "long": -5.0, "fine_both": false, "want": true },
-    { "name": "앞뒤 5.2 아님", "long": 5.2, "fine_both": false, "want": false },
-    { "name": "앞뒤 5.9 재측정", "long": 5.9, "fine_both": false, "want": true },
-    { "name": "앞뒤 4.4 아님", "long": 4.4, "fine_both": false, "want": false },
-    { "name": "5 m 배수는 값과 상관없이", "long": 0.3, "fine_both": true, "want": true }
-  ],
-  "check_point": [
-    { "name": "범위 밖", "prev": [], "point": { "mark": 5, "long": 16, "cross": 1 }, "want": ["range_long"] },
-    { "name": "좌우 범위 밖", "prev": [], "point": { "mark": 5, "long": 1, "cross": 11 }, "want": ["range_cross"] },
-    { "name": "표시값 감소", "prev": [{ "mark": 15, "long": 1 }], "point": { "mark": 14, "long": 1, "cross": 1, "kind": "gap" }, "want": ["mark_down"] },
-    { "name": "더한 지점은 감소 허용", "prev": [{ "mark": 15, "long": 1 }], "point": { "mark": 10, "long": 1, "cross": 1, "kind": "more" }, "want": [] },
-    { "name": "공백 11 m 초과", "prev": [{ "mark": 5, "long": 1 }], "point": { "mark": 17, "long": 1, "cross": 1, "kind": "gap" }, "want": ["gap"] },
-    { "name": "이웃과 3도 넘게 차이", "prev": [{ "mark": 5, "long": 1 }], "point": { "mark": 15, "long": 4.5, "cross": 1, "kind": "gap" }, "want": ["neighbor"] },
-    { "name": "이웃과 부호 다름", "prev": [{ "mark": 5, "long": 2.0 }], "point": { "mark": 15, "long": -2.0, "cross": 1, "kind": "gap" }, "want": ["neighbor", "sign"] },
-    { "name": "작은 값의 부호 차이는 무시", "prev": [{ "mark": 5, "long": 0.4 }], "point": { "mark": 15, "long": -0.3, "cross": 1, "kind": "gap" }, "want": [] },
-    { "name": "양 끝 둘째 값 부호가 다름", "prev": [], "point": { "mark": 5, "long": 4.6, "values": [4.6, -4.7], "cross": 1, "kind": "gap" }, "want": ["both_sign"] },
-    { "name": "정상", "prev": [{ "mark": 5, "long": 1 }], "point": { "mark": 15, "long": 1.5, "cross": 1, "kind": "gap" }, "want": [] }
-  ],
-  "check_len": [
-    { "name": "15%와 2 m를 모두 넘음", "measured": 13, "map": 16, "want": true },
-    { "name": "15%만 넘음", "measured": 4.2, "map": 5.5, "want": false },
-    { "name": "2 m만 넘음", "measured": 97, "map": 100, "want": false },
-    { "name": "맞음", "measured": 16, "map": 16, "want": false }
-  ],
-  "position": [
-    { "name": "끝까지 잼", "map_len": 100, "mark": 25, "start": 0, "end": 50, "breaks": [], "second": false, "reached": true, "long": 3.0, "want_s": 50, "want_long": 3.0 },
-    { "name": "둘째 마디에서 출발", "map_len": 100, "mark": 25, "start": 0, "end": 50, "breaks": [], "second": true, "reached": true, "long": 3.0, "want_s": 50, "want_long": -3.0 },
-    { "name": "비대칭 둘째 마디", "map_len": 100, "mark": 10, "start": 0, "end": 40, "breaks": [], "second": true, "reached": true, "long": -2.0, "want_s": 75, "want_long": 2.0 },
-    { "name": "중간 초기화", "map_len": 60, "mark": 5, "start": 0, "end": 10, "breaks": [{ "orig": 20, "now": 0 }], "second": false, "reached": true, "long": 1.0, "want_s": 50, "want_long": 1.0 },
-    { "name": "끝까지 못 감은 잰 거리 그대로", "map_len": 100, "mark": 7, "start": 0, "end": 9.5, "breaks": [], "second": false, "reached": false, "long": 1.0, "want_s": 7, "want_long": 1.0 },
-    { "name": "끝까지 못 감 둘째 마디", "map_len": 100, "mark": 7, "start": 0, "end": 9.5, "breaks": [], "second": true, "reached": false, "long": 1.0, "want_s": 93, "want_long": -1.0 },
-    { "name": "뒤쪽 더한 지점도 같은 식", "map_len": 30, "mark": 10, "start": 0, "end": 30, "breaks": [], "second": false, "reached": true, "long": 1.0, "want_s": 10, "want_long": 1.0 },
-    { "name": "배율이 1이 아닌 값", "map_len": 16, "mark": 5, "start": 2, "end": 22, "breaks": [], "second": false, "reached": true, "long": 1.0, "want_s": 2.4, "want_long": 1.0 }
-  ]
+ "long_route": [
+  {
+   "name": "1번은 그 값",
+   "values": [
+    4.7
+   ],
+   "method": "one",
+   "want": 4.7
+  },
+  {
+   "name": "양 끝은 부호를 포함한 평균",
+   "values": [
+    4.7,
+    4.6
+   ],
+   "method": "both",
+   "want": 4.65
+  },
+  {
+   "name": "양 끝 부호가 다르면 평균이 작아짐",
+   "values": [
+    0.4,
+    -0.2
+   ],
+   "method": "both",
+   "want": 0.1
+  },
+  {
+   "name": "세 자리는 크기가 가운데인 값",
+   "values": [
+    5.1,
+    -2.0,
+    3.0
+   ],
+   "method": "three",
+   "want": 3.0
+  },
+  {
+   "name": "세 자리 가운데 크기가 음수면 부호 유지",
+   "values": [
+    -3.0,
+    5.1,
+    2.0
+   ],
+   "method": "three",
+   "want": -3.0
+  },
+  {
+   "name": "세 자리 값이 같으면 그 값",
+   "values": [
+    2.0,
+    2.0,
+    -2.0
+   ],
+   "method": "three",
+   "want": 2.0
+  }
+ ],
+ "cross_route": [
+  {
+   "name": "1번은 그 값",
+   "values": [
+    1.1
+   ],
+   "method": "one",
+   "want": 1.1
+  },
+  {
+   "name": "양 끝은 크기 평균",
+   "values": [
+    2.2,
+    2.4
+   ],
+   "method": "both",
+   "want": 2.3
+  },
+  {
+   "name": "세 자리는 가운데 자리 값",
+   "values": [
+    1.0,
+    1.5,
+    2.0
+   ],
+   "method": "three",
+   "want": 1.5
+  },
+  {
+   "name": "세 자리에서 1개만 재면 그 값",
+   "values": [
+    1.2
+   ],
+   "method": "three",
+   "want": 1.2
+  }
+ ],
+ "at_least": [
+  {
+   "name": "부동소수 경계 3.2",
+   "value": 3.1999999999999997,
+   "limit": 3.2,
+   "want": true
+  },
+  {
+   "name": "부동소수 경계 4.7",
+   "value": 4.700000000000001,
+   "limit": 4.7,
+   "want": true
+  },
+  {
+   "name": "아래",
+   "value": 3.1,
+   "limit": 3.2,
+   "want": false
+  }
+ ],
+ "boundary": [
+  {
+   "name": "4.8 양쪽에 걸침",
+   "values": [
+    4.0,
+    5.0,
+    4.5
+   ],
+   "limits": [
+    4.8,
+    5.8
+   ],
+   "want": true
+  },
+  {
+   "name": "모두 4.8 위 5.8 아래",
+   "values": [
+    5.0,
+    5.2,
+    5.6
+   ],
+   "limits": [
+    4.8,
+    5.8
+   ],
+   "want": false
+  },
+  {
+   "name": "5.8 양쪽에 걸침",
+   "values": [
+    5.0,
+    5.2,
+    5.9
+   ],
+   "limits": [
+    4.8,
+    5.8
+   ],
+   "want": true
+  },
+  {
+   "name": "부호는 보지 않음",
+   "values": [
+    -4.0,
+    5.0,
+    3.0
+   ],
+   "limits": [
+    4.8,
+    5.8
+   ],
+   "want": true
+  },
+  {
+   "name": "모두 아래",
+   "values": [
+    1.0,
+    2.0,
+    3.0
+   ],
+   "limits": [
+    4.8,
+    5.8
+   ],
+   "want": false
+  },
+  {
+   "name": "경계값 자체는 위로 본다",
+   "values": [
+    4.7,
+    4.8,
+    4.75
+   ],
+   "limits": [
+    4.8,
+    5.8
+   ],
+   "want": true
+  }
+ ],
+ "continued": [
+  {
+   "name": "끊김 없음",
+   "mark": 12.0,
+   "start": 0,
+   "breaks": [],
+   "want": 12.0
+  },
+  {
+   "name": "시작값 빼기",
+   "mark": 112.0,
+   "start": 100,
+   "breaks": [],
+   "want": 12.0
+  },
+  {
+   "name": "중간 초기화",
+   "mark": 5.0,
+   "start": 0,
+   "breaks": [
+    {
+     "orig": 20.0,
+     "now": 0.0
+    }
+   ],
+   "want": 25.0
+  },
+  {
+   "name": "끊김 두 번",
+   "mark": 3.0,
+   "start": 10,
+   "breaks": [
+    {
+     "orig": 30.0,
+     "now": 0.0
+    },
+    {
+     "orig": 8.0,
+     "now": 1.0
+    }
+   ],
+   "want": 30.0
+  }
+ ],
+ "plan": [
+  {
+   "name": "52 m는 5, 15, 25, 35, 45와 끝 앞",
+   "len": 52,
+   "fine": [],
+   "stop": null,
+   "want": [
+    [
+     5,
+     "gap",
+     false,
+     true
+    ],
+    [
+     15,
+     "gap",
+     false,
+     true
+    ],
+    [
+     25,
+     "gap",
+     false,
+     true
+    ],
+    [
+     35,
+     "gap",
+     false,
+     true
+    ],
+    [
+     45,
+     "gap",
+     false,
+     true
+    ],
+    [
+     51,
+     "end",
+     false,
+     true
+    ]
+   ]
+  },
+  {
+   "name": "16 m",
+   "len": 16,
+   "fine": [],
+   "stop": null,
+   "want": [
+    [
+     5,
+     "gap",
+     false,
+     true
+    ],
+    [
+     15,
+     "gap",
+     false,
+     true
+    ]
+   ]
+  },
+  {
+   "name": "10 m는 끝 앞 없음(딱 5 m)",
+   "len": 10,
+   "fine": [],
+   "stop": null,
+   "want": [
+    [
+     5,
+     "gap",
+     false,
+     true
+    ]
+   ]
+  },
+  {
+   "name": "5 m보다 짧으면 가운데 1곳",
+   "len": 4,
+   "fine": [],
+   "stop": null,
+   "want": [
+    [
+     2,
+     "gap",
+     false,
+     true
+    ]
+   ]
+  },
+  {
+   "name": "3 m보다 짧으면 없음",
+   "len": 2.9,
+   "fine": [],
+   "stop": null,
+   "want": []
+  },
+  {
+   "name": "1순위 16 m 전체",
+   "len": 16,
+   "fine": [
+    [
+     0,
+     16
+    ]
+   ],
+   "stop": null,
+   "want": [
+    [
+     2,
+     "fine",
+     false,
+     false
+    ],
+    [
+     4,
+     "fine",
+     false,
+     false
+    ],
+    [
+     5,
+     "fine",
+     true,
+     true
+    ],
+    [
+     6,
+     "fine",
+     false,
+     false
+    ],
+    [
+     8,
+     "fine",
+     false,
+     false
+    ],
+    [
+     10,
+     "fine",
+     true,
+     true
+    ],
+    [
+     12,
+     "fine",
+     false,
+     false
+    ],
+    [
+     14,
+     "fine",
+     false,
+     false
+    ],
+    [
+     15,
+     "fine",
+     true,
+     true
+    ]
+   ]
+  },
+  {
+   "name": "앞 9.3 m만 1순위인 41.2 m",
+   "len": 41.2,
+   "fine": [
+    [
+     0,
+     9.3
+    ]
+   ],
+   "stop": null,
+   "want": [
+    [
+     2,
+     "fine",
+     false,
+     false
+    ],
+    [
+     4,
+     "fine",
+     false,
+     false
+    ],
+    [
+     5,
+     "fine",
+     true,
+     true
+    ],
+    [
+     6,
+     "fine",
+     false,
+     false
+    ],
+    [
+     8,
+     "fine",
+     false,
+     false
+    ],
+    [
+     15,
+     "gap",
+     false,
+     true
+    ],
+    [
+     25,
+     "gap",
+     false,
+     true
+    ],
+    [
+     35,
+     "gap",
+     false,
+     true
+    ],
+    [
+     40.2,
+     "end",
+     false,
+     true
+    ]
+   ]
+  },
+  {
+   "name": "계획된 중단 9.5 m",
+   "len": 84.4,
+   "fine": [],
+   "stop": 9.5,
+   "want": [
+    [
+     5,
+     "gap",
+     false,
+     true
+    ]
+   ]
+  },
+  {
+   "name": "3 m 미만이어도 경사 표시가 있으면 1곳",
+   "len": 2.5,
+   "fine": [],
+   "stop": null,
+   "inclines": [
+    5.2
+   ],
+   "want": [
+    [
+     1.3,
+     "gap",
+     false,
+     true
+    ]
+   ]
+  },
+  {
+   "name": "3 m 미만이고 표시가 없으면 안 잼",
+   "len": 2.5,
+   "fine": [],
+   "stop": null,
+   "inclines": [],
+   "want": []
+  }
+ ],
+ "pending": [
+  {
+   "name": "더한 지점은 뒤쪽 먼저",
+   "plan": [
+    5,
+    15,
+    25
+   ],
+   "saved": [
+    [
+     5,
+     1.0,
+     "gap"
+    ],
+    [
+     15,
+     3.5,
+     "gap"
+    ]
+   ],
+   "len": 30,
+   "fine": [],
+   "want": [
+    [
+     10,
+     "more"
+    ],
+    [
+     20,
+     "more"
+    ],
+    [
+     25,
+     "gap"
+    ]
+   ]
+  },
+  {
+   "name": "구간 밖 더한 지점은 없음",
+   "plan": [
+    5
+   ],
+   "saved": [
+    [
+     5,
+     3.2,
+     "gap"
+    ]
+   ],
+   "len": 8,
+   "fine": [],
+   "want": []
+  },
+  {
+   "name": "이미 잰 자리는 다시 안 잼",
+   "plan": [
+    5,
+    15,
+    25
+   ],
+   "saved": [
+    [
+     5,
+     3.5,
+     "gap"
+    ],
+    [
+     10,
+     1.0,
+     "more"
+    ],
+    [
+     15,
+     3.5,
+     "gap"
+    ]
+   ],
+   "len": 30,
+   "fine": [],
+   "want": [
+    [
+     20,
+     "more"
+    ],
+    [
+     25,
+     "gap"
+    ]
+   ]
+  },
+  {
+   "name": "더한 지점 값은 더 늘리지 않음",
+   "plan": [
+    5,
+    15
+   ],
+   "saved": [
+    [
+     5,
+     1.0,
+     "gap"
+    ],
+    [
+     15,
+     1.0,
+     "gap"
+    ],
+    [
+     20,
+     4.0,
+     "more"
+    ]
+   ],
+   "len": 30,
+   "fine": [],
+   "want": []
+  },
+  {
+   "name": "표시값이 조금 달라도 잰 것으로 봄",
+   "plan": [
+    5,
+    15
+   ],
+   "saved": [
+    [
+     5.3,
+     1.0,
+     "gap"
+    ]
+   ],
+   "len": 20,
+   "fine": [],
+   "want": [
+    [
+     15,
+     "gap"
+    ]
+   ]
+  },
+  {
+   "name": "1순위 범위에서는 더 재기 끔",
+   "plan": [
+    2,
+    4,
+    5
+   ],
+   "saved": [
+    [
+     2,
+     4.0,
+     "fine"
+    ]
+   ],
+   "len": 6,
+   "fine": [
+    [
+     0,
+     6
+    ]
+   ],
+   "want": [
+    [
+     4,
+     "fine"
+    ],
+    [
+     5,
+     "fine"
+    ]
+   ]
+  },
+  {
+   "name": "4.4에서 재도 5 m 지점이 남는다",
+   "plan": [
+    2,
+    4,
+    5,
+    6,
+    8
+   ],
+   "saved": [
+    [
+     2,
+     1.0,
+     "fine"
+    ],
+    [
+     4.4,
+     1.0,
+     "fine"
+    ]
+   ],
+   "len": 10,
+   "fine": [
+    [
+     0,
+     10
+    ]
+   ],
+   "want": [
+    [
+     5,
+     "fine"
+    ],
+    [
+     6,
+     "fine"
+    ],
+    [
+     8,
+     "fine"
+    ]
+   ]
+  },
+  {
+   "name": "5.8에서 재면 가까운 6만 지운다",
+   "plan": [
+    2,
+    4,
+    5,
+    6,
+    8
+   ],
+   "saved": [
+    [
+     2,
+     1.0,
+     "fine"
+    ],
+    [
+     4,
+     1.0,
+     "fine"
+    ],
+    [
+     5.8,
+     1.0,
+     "fine"
+    ]
+   ],
+   "len": 10,
+   "fine": [
+    [
+     0,
+     10
+    ]
+   ],
+   "want": [
+    [
+     5,
+     "fine"
+    ],
+    [
+     8,
+     "fine"
+    ]
+   ]
+  },
+  {
+   "name": "멈추는 거리 너머로 더하지 않는다",
+   "plan": [
+    5
+   ],
+   "saved": [
+    [
+     5,
+     3.5,
+     "gap"
+    ]
+   ],
+   "len": 60,
+   "fine": [],
+   "stop": 9.5,
+   "want": []
+  },
+  {
+   "name": "여기 더 잰 지점은 예정 지점을 지우지 않는다",
+   "plan": [
+    5,
+    15
+   ],
+   "saved": [
+    [
+     4.8,
+     1.0,
+     "more",
+     "structure"
+    ]
+   ],
+   "len": 20,
+   "fine": [],
+   "want": [
+    [
+     5,
+     "gap"
+    ],
+    [
+     15,
+     "gap"
+    ]
+   ]
+  }
+ ],
+ "recheck": [
+  {
+   "name": "앞뒤 4.5 재측정",
+   "long": 4.5,
+   "fine_both": false,
+   "want": true
+  },
+  {
+   "name": "앞뒤 5.0 재측정",
+   "long": -5.0,
+   "fine_both": false,
+   "want": true
+  },
+  {
+   "name": "앞뒤 5.2 아님",
+   "long": 5.2,
+   "fine_both": false,
+   "want": false
+  },
+  {
+   "name": "앞뒤 5.9 재측정",
+   "long": 5.9,
+   "fine_both": false,
+   "want": true
+  },
+  {
+   "name": "앞뒤 4.4 아님",
+   "long": 4.4,
+   "fine_both": false,
+   "want": false
+  },
+  {
+   "name": "5 m 배수는 값과 상관없이",
+   "long": 0.3,
+   "fine_both": true,
+   "want": true
+  }
+ ],
+ "check_point": [
+  {
+   "name": "범위 밖",
+   "prev": [],
+   "point": {
+    "mark": 5,
+    "long": 16,
+    "cross": 1
+   },
+   "want": [
+    "range_long"
+   ]
+  },
+  {
+   "name": "좌우 범위 밖",
+   "prev": [],
+   "point": {
+    "mark": 5,
+    "long": 1,
+    "cross": 11
+   },
+   "want": [
+    "range_cross"
+   ]
+  },
+  {
+   "name": "표시값 감소",
+   "prev": [
+    {
+     "mark": 15,
+     "long": 1
+    }
+   ],
+   "point": {
+    "mark": 14,
+    "long": 1,
+    "cross": 1,
+    "kind": "gap"
+   },
+   "want": [
+    "mark_down"
+   ]
+  },
+  {
+   "name": "더한 지점은 감소 허용",
+   "prev": [
+    {
+     "mark": 15,
+     "long": 1
+    }
+   ],
+   "point": {
+    "mark": 10,
+    "long": 1,
+    "cross": 1,
+    "kind": "more"
+   },
+   "want": []
+  },
+  {
+   "name": "공백 11 m 초과",
+   "prev": [
+    {
+     "mark": 5,
+     "long": 1
+    }
+   ],
+   "point": {
+    "mark": 17,
+    "long": 1,
+    "cross": 1,
+    "kind": "gap"
+   },
+   "want": [
+    "gap"
+   ]
+  },
+  {
+   "name": "이웃과 3도 넘게 차이",
+   "prev": [
+    {
+     "mark": 5,
+     "long": 1
+    }
+   ],
+   "point": {
+    "mark": 15,
+    "long": 4.5,
+    "cross": 1,
+    "kind": "gap"
+   },
+   "want": [
+    "neighbor"
+   ]
+  },
+  {
+   "name": "이웃과 부호 다름",
+   "prev": [
+    {
+     "mark": 5,
+     "long": 2.0
+    }
+   ],
+   "point": {
+    "mark": 15,
+    "long": -2.0,
+    "cross": 1,
+    "kind": "gap"
+   },
+   "want": [
+    "neighbor",
+    "sign"
+   ]
+  },
+  {
+   "name": "작은 값의 부호 차이는 무시",
+   "prev": [
+    {
+     "mark": 5,
+     "long": 0.4
+    }
+   ],
+   "point": {
+    "mark": 15,
+    "long": -0.3,
+    "cross": 1,
+    "kind": "gap"
+   },
+   "want": []
+  },
+  {
+   "name": "양 끝 둘째 값 부호가 다름",
+   "prev": [],
+   "point": {
+    "mark": 5,
+    "long": 4.6,
+    "values": [
+     4.6,
+     -4.7
+    ],
+    "cross": 1,
+    "kind": "gap"
+   },
+   "want": [
+    "both_sign"
+   ]
+  },
+  {
+   "name": "정상",
+   "prev": [
+    {
+     "mark": 5,
+     "long": 1
+    }
+   ],
+   "point": {
+    "mark": 15,
+    "long": 1.5,
+    "cross": 1,
+    "kind": "gap"
+   },
+   "want": []
+  }
+ ],
+ "check_len": [
+  {
+   "name": "15%와 2 m를 모두 넘음",
+   "measured": 13,
+   "map": 16,
+   "want": true
+  },
+  {
+   "name": "15%만 넘음",
+   "measured": 4.2,
+   "map": 5.5,
+   "want": false
+  },
+  {
+   "name": "2 m만 넘음",
+   "measured": 97,
+   "map": 100,
+   "want": false
+  },
+  {
+   "name": "맞음",
+   "measured": 16,
+   "map": 16,
+   "want": false
+  }
+ ],
+ "position": [
+  {
+   "name": "끝까지 잼",
+   "map_len": 100,
+   "mark": 25,
+   "start": 0,
+   "end": 50,
+   "breaks": [],
+   "second": false,
+   "reached": true,
+   "long": 3.0,
+   "want_s": 50,
+   "want_long": 3.0
+  },
+  {
+   "name": "둘째 마디에서 출발",
+   "map_len": 100,
+   "mark": 25,
+   "start": 0,
+   "end": 50,
+   "breaks": [],
+   "second": true,
+   "reached": true,
+   "long": 3.0,
+   "want_s": 50,
+   "want_long": -3.0
+  },
+  {
+   "name": "비대칭 둘째 마디",
+   "map_len": 100,
+   "mark": 10,
+   "start": 0,
+   "end": 40,
+   "breaks": [],
+   "second": true,
+   "reached": true,
+   "long": -2.0,
+   "want_s": 75,
+   "want_long": 2.0
+  },
+  {
+   "name": "중간 초기화",
+   "map_len": 60,
+   "mark": 5,
+   "start": 0,
+   "end": 10,
+   "breaks": [
+    {
+     "orig": 20,
+     "now": 0
+    }
+   ],
+   "second": false,
+   "reached": true,
+   "long": 1.0,
+   "want_s": 50,
+   "want_long": 1.0
+  },
+  {
+   "name": "끝까지 못 감은 잰 거리 그대로",
+   "map_len": 100,
+   "mark": 7,
+   "start": 0,
+   "end": 9.5,
+   "breaks": [],
+   "second": false,
+   "reached": false,
+   "long": 1.0,
+   "want_s": 7,
+   "want_long": 1.0
+  },
+  {
+   "name": "끝까지 못 감 둘째 마디",
+   "map_len": 100,
+   "mark": 7,
+   "start": 0,
+   "end": 9.5,
+   "breaks": [],
+   "second": true,
+   "reached": false,
+   "long": 1.0,
+   "want_s": 93,
+   "want_long": -1.0
+  },
+  {
+   "name": "뒤쪽 더한 지점도 같은 식",
+   "map_len": 30,
+   "mark": 10,
+   "start": 0,
+   "end": 30,
+   "breaks": [],
+   "second": false,
+   "reached": true,
+   "long": 1.0,
+   "want_s": 10,
+   "want_long": 1.0
+  },
+  {
+   "name": "배율이 1이 아닌 값",
+   "map_len": 16,
+   "mark": 5,
+   "start": 2,
+   "end": 22,
+   "breaks": [],
+   "second": false,
+   "reached": true,
+   "long": 1.0,
+   "want_s": 2.4,
+   "want_long": 1.0
+  }
+ ]
 }

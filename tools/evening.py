@@ -4,7 +4,10 @@
   python -I tools/evening.py 백업.txt --pack 자료.json --out 결과폴더 [--photos 사진폴더] [--overrides 저녁확인.json] [--allow-test]
   python -I tools/evening.py --db --pack 자료.json --out 결과폴더
 
-저녁 확인 값 파일 형식: {"사건번호": {"long": 5.0, "why": "바퀴 줄 전체"}}
+저녁 확인 값 파일 형식: {"사건번호": {"long": 5.0, "why": "바퀴 줄 전체"}}. 이유(why)가 없으면 멈춘다.
+고른 측정 파일 형식(--runs): {"구간 번호": "구간 측정 번호"}. 같은 구간을 여러 번 쟀을 때 사람이 경로에 쓸 측정을 정한다.
+저녁 고침 파일 형식(--fixes): [{"of": "사건번호", "data": {"end": 15.3}, "unset": [], "why": "이유"}, {"void": "사건번호", "why": "이유"}].
+시작값, 구간, 출발 마디는 run_start 사건을, 끝값과 결과는 run_end 사건을 고친다. 원본 사건은 그대로 두고 고침 사건을 더한다.
 규칙은 측정 매뉴얼 9장 다, 마와 tools/rules.json을 따른다. 앱의 docs/js/calc.js와 같은 시험값(tests/calc_cases.json)을 통과한다.
 """
 import argparse
@@ -88,11 +91,19 @@ def time_of(e):
     return datetime.fromisoformat(e["at"].replace("Z", "+00:00")).timestamp()
 
 
+def order_of(e):
+    """순서 번호. 앱의 calc.js orderOf와 같다. 번호가 없는 옛 기록은 시각(ms)."""
+    o = e.get("ord")
+    if isinstance(o, (int, float)) and not isinstance(o, bool):
+        return o
+    return round(time_of(e) * 1000)
+
+
 def sort_events(events):
     seen = {}
     for e in events:
         seen.setdefault(e["id"], e)
-    return sorted(seen.values(), key=lambda e: (time_of(e), str(e.get("dev")), e.get("seq") or 0))
+    return sorted(seen.values(), key=lambda e: (order_of(e), str(e.get("dev")), e.get("seq") or 0))
 
 
 def fold(events):
@@ -103,7 +114,7 @@ def fold(events):
             fixes.setdefault(e["data"]["of"], []).append(e)
         elif e["kind"] == "void":
             voided.add(e["data"]["of"])
-    S = {"runs": {}, "order": [], "photos": {}, "facilities": [], "map_checks": [], "new_paths": {}, "route_choice": None, "tool_checks": [], "redo": [], "day": None, "seq": {}, "events": ev}
+    S = {"runs": {}, "order": [], "photos": {}, "facilities": [], "map_checks": [], "new_paths": {}, "route_choice": None, "tool_checks": [], "redo": [], "day": None, "days": [], "seq": {}, "events": ev, "orphans": []}
     level_fail = None
     for e in ev:
         S["seq"].setdefault(e.get("dev"), []).append(e.get("seq") or 0)
@@ -120,10 +131,13 @@ def fold(events):
         d = dict(e["data"])
         for f in fixes.get(e["id"], []):
             d.update(f["data"]["data"])
-        d["_id"], d["_at"], d["_gps"] = e["id"], e["at"], e.get("gps")
+            for key in f["data"].get("unset") or []:
+                d.pop(key, None)
+        d["_id"], d["_at"], d["_gps"], d["_ord"] = e["id"], e["at"], e.get("gps"), e.get("ord")
         d["_rev"] = 1 + len(fixes.get(e["id"], []))
         if k == "day":
             S["day"] = d
+            S["days"].append(d)
         elif k == "tool_check":
             S["tool_checks"].append(d)
             if d.get("tool") == "level":
@@ -138,7 +152,12 @@ def fold(events):
         elif k in ("slope", "barrier", "surface", "break"):
             r = S["runs"].get(e.get("run"))
             if not r:
+                # 시작 사건보다 앞에 오거나 붙을 구간 측정이 없는 기록. 버리지 않고 검사에 올린다.
+                S["orphans"].append({"kind": k, "id": e["id"], "run": e.get("run")})
                 continue
+            # 끊김 수는 쌓는 순서로 센다. 앞의 끊김을 지워도 뒤 기록이 다음 끊김을 받지 않는다(앱의 withBreaks와 같다).
+            if k != "break":
+                d["breakCount"] = len(r["breaks"])
             if k == "slope":
                 d["_level_fail"] = level_fail
                 r["points"].append(d)
@@ -150,12 +169,12 @@ def fold(events):
                 r["breaks"].append(d)
             if e.get("gps"):
                 r["gps"].append(e["gps"])
-        elif k == "facility":
+        elif k in ("facility", "map_check"):
             d["_run"] = e.get("run")
-            S["facilities"].append(d)
-        elif k == "map_check":
-            d["_run"] = e.get("run")
-            S["map_checks"].append(d)
+            r = S["runs"].get(e.get("run"))
+            if r:
+                d["breakCount"] = len(r["breaks"])
+            S["facilities" if k == "facility" else "map_checks"].append(d)
         elif k == "new_path":
             S["new_paths"][d["no"]] = d
         elif k == "route_choice":
@@ -165,7 +184,7 @@ def fold(events):
         elif k == "run_end":
             r = S["runs"].get(e.get("run"))
             if r:
-                r.update(closed=True, end=d.get("end"), result=d.get("result"), missing=d.get("missing") or [], planned=bool(d.get("planned")), reason=d.get("reason"), ended=e["at"], end_id=e["id"])
+                r.update(closed=True, end=d.get("end"), result=d.get("result"), missing=d.get("missing") or [], planned=bool(d.get("planned")), reason=d.get("reason"), ended=e["at"], end_id=e["id"], no_barrier=d.get("no_barrier"), twin=d.get("twin"))
     return S
 
 
@@ -186,58 +205,200 @@ def run_status(r):
     return {"stopped": "partial", "not_path": "not_path", "no_entry": "no_entry", "temp_block": "temp_block"}.get(r["result"], "partial")
 
 
+def ord_of(rec):
+    """쌓은 기록(d)의 순서 번호."""
+    return order_of({"ord": rec.get("_ord"), "at": rec["_at"]})
+
+
 def retro_fail_from(S):
-    """마친 뒤 점검이 실패하면 마지막 통과 뒤의 값에 점검 실패를 붙인다(매뉴얼 10장 나 4)."""
-    last_ok = None
-    fail_after = False
+    """마친 뒤 점검이 실패하면 그 앞 마지막 통과부터 실패까지의 값에 점검 실패를 붙인다(매뉴얼 10장 나 4).
+    기간 목록을 돌려준다. 다음 통과가 와도 지난 기간은 남는다."""
+    periods, last_ok = [], None
     for t in S["tool_checks"]:
         if t.get("tool") != "level":
             continue
         if t.get("passed"):
-            last_ok = t["_at"]
-            fail_after = False
+            last_ok = t
         elif t.get("when") == "after":
-            fail_after = True
-    return last_ok if fail_after else None
+            periods.append((ord_of(last_ok) if last_ok else -math.inf, ord_of(t)))
+    return periods
 
 
 def point_flags(p, retro, rules):
-    flags = list(p.get("flags") or [])
+    # 경계 표시는 저장값을 믿지 않고 값으로 다시 정한다(앱의 calc.js slopePoint와 같다)
+    flags = [f for f in (p.get("flags") or []) if f != "boundary"]
     method = p.get("method") or "one"
     values = p.get("values") or []
-    if method == "three" and len(values) == 3 and is_boundary(values, rules["slope"]["bound_long"]) and "boundary" not in flags:
+    if method == "three" and len(values) == 3 and is_boundary(values, rules["slope"]["bound_long"]):
         flags.append("boundary")
     if p.get("_level_fail") and "tool_fail" not in flags:
         flags.append("tool_fail")
-    if retro and time_of({"at": p["_at"]}) >= time_of({"at": retro}) and "tool_fail" not in flags:
+    if retro and "tool_fail" not in flags and any(a <= ord_of(p) <= b for a, b in retro):
         flags.append("tool_fail")
+    if both_sign(p):
+        flags.append("both_sign")
     return flags
 
 
-# 경로 입력 --------------------------------------------------------------------
-def choose_runs(S):
-    """구간마다 경로에 쓸 구간 측정을 고른다. 경로 줄 표시가 우선이고, 같은 조건이면 닫힌 것 중 나중 것이다."""
-    best = {}
-    for rid in S["order"]:
-        r = S["runs"][rid]
-        cur = best.get(r["seg"])
-        if cur is None:
-            best[r["seg"]] = r
-            continue
-        rank = lambda x: (x["route_line"], x["closed"], x["line"] == "main")
-        if rank(r) >= rank(cur):
-            best[r["seg"]] = r
-    return best
+def both_sign(p):
+    """양 끝 두 값의 부호가 다르고 각 크기가 0.5° 이상(앱의 checkPoint both_sign과 같다)."""
+    v = p.get("values") or []
+    return (p.get("method") or "one") == "both" and len(v) == 2 and (v[0] > 0) != (v[1] > 0) and abs(v[0]) >= 0.5 and abs(v[1]) >= 0.5
 
 
-def route_input(events, pack, overrides=None, allow_test=False):
+def uncertain_modes(slg, flags, values, rules):
+    """이동 수단별 불확실. 4.8° 걸침은 수동, 5.8° 걸침은 전동, 점검 실패와 양 끝 부호 오류는 수동과 전동."""
+    U, B = rules["uncertain"], rules["slope"]["bound_long"]
+    out = set()
+    mag = abs(slg) if slg is not None else None
+    if mag is not None and in_ranges(mag, [U["manual_long"]]):
+        out.add("manual")
+    if mag is not None and in_ranges(mag, [U["power_long"]]):
+        out.add("power")
+    if "boundary" in flags and values:
+        if is_boundary(values, B[:1]):
+            out.add("manual")
+        if len(B) > 1 and is_boundary(values, B[1:2]):
+            out.add("power")
+    if "tool_fail" in flags or "both_sign" in flags:
+        out |= {"manual", "power"}
+    return [m for m in ("manual", "power", "stroller") if m in out]
+
+
+UNREAD_TYPES = ("bump", "gap", "width_rep", "narrow")
+
+
+def barrier_route(b, rules):
+    """매뉴얼 9장 다: 턱은 큰 값, 폭은 작은 값 하나만 넘긴다. 턱 18~22 mm는 불확실(v2 결정 8)."""
+    t = b.get("type")
+    vals = [v for v in (b.get("value"), b.get("value2")) if v is not None]
+    out = {"route_value": None, "uncertain_for": []}
+    if t == "bump":
+        out["route_value"] = max(vals) if vals else None
+        lo, hi = rules["bump"]["recheck_mm"]
+        if any(lo - EPS <= v <= hi + EPS for v in vals):
+            out["uncertain_for"] = ["manual", "power", "stroller"]
+    elif t in ("width_rep", "narrow"):
+        vals = vals + ([b["min_cm"]] if b.get("min_cm") is not None else [])
+        out["route_value"] = min(vals) if vals else None
+    out["unmeasured"] = bool(b.get("unread")) or (t in UNREAD_TYPES and b.get("value") is None)
+    return out
+
+
+def run_place(r, seg, m, rec):
+    """구간 측정 안의 표시값을 구간표 첫 마디에서 잰 거리로 바꾼다. 저장할 때의 끊김 수(breakCount)까지만 쓴다."""
+    if m is None:
+        return None
+    nb = rec.get("breakCount", len(r["breaks"]))
+    second = r["from"] == seg["b"]
+    reached = r["result"] == "ok" and r["end"] is not None
+    return map_position(seg["len"], m, r["start"], r["end"], r["breaks"], second, reached, 0.0, r["breaks"][:nb])[0]
+
+
+def clip(s, seg_len):
+    if s is None:
+        return None, False
+    if s < -EPS or s > seg_len + EPS:
+        return min(max(s, 0.0), seg_len), True
+    return s, False
+
+
+def value_missing(r, seg, rules):
+    """못 잰 값을 잰 것으로 치지 않는다. 앱의 구간 끝 판정과 같은 규칙(매뉴얼 1장 나 5, 9장 다)."""
+    out = set(r["missing"])
+    if r["result"] not in VALUE_RESULTS:
+        return out
+    valued = [p for p in r["points"] if p.get("values")]
+    if seg["len"] >= rules["slope"]["short_skip"] and r["points"] and not valued:
+        out.add("slope")
+    if any(not p.get("values") for p in r["points"]):
+        out.add("slope_points")
+    if seg["len"] >= rules["width"]["skip_len"] and not any(b.get("type") == "width_rep" and b.get("value") is not None for b in r["barriers"]):
+        out.add("width")
+    if any(b.get("unread") for b in r["barriers"]):
+        out.add("barrier_value")
+    return out
+
+
+def apply_fixes(events, fixes, pack):
+    """저녁에 사람이 고친 값을 사건으로 더한다. 원본 사건은 건드리지 않는다. 이유가 없거나 없는 사건을 가리키면 멈춘다."""
+    ids = {e["id"] for e in events}
+    top = max((order_of(e) for e in events), default=0)
+    at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    out = list(events)
+    for i, x in enumerate(fixes, 1):
+        target = x.get("of") or x.get("void")
+        if not str(x.get("why") or "").strip():
+            raise ValueError(f"저녁 고침에 이유(why)가 없습니다: {target}")
+        if target not in ids:
+            raise ValueError(f"저녁 고침이 없는 사건을 가리킵니다: {target}")
+        kind = "fix" if x.get("of") else "void"
+        data = {"of": target, "why": x["why"]}
+        if kind == "fix":
+            data.update(data=x.get("data") or {}, unset=x.get("unset") or [])
+        out.append({"id": f"evening-{i}", "seq": i, "ord": top + i, "kind": kind, "at": at, "dev": "evening", "app": "evening", "site": pack["site"], "test": bool(pack.get("test")), "net": pack["net"], "pack": pack.get("hash"), "rules": pack["rules"].get("version"), "data": data})
+    return out
+
+
+def check_events(S, pack, allow_test=False):
+    """다른 연결망, 대상지, 시험 표시의 기록이 섞이면 멈춘다."""
     if pack.get("test") and not allow_test:
         raise ValueError("시험 자료는 경로 계산에 넣지 않습니다")
+    bad = [e["id"] for e in S["events"] if (e.get("net") and e["net"] != pack["net"]) or (e.get("site") and e["site"] != pack["site"]) or bool(e.get("test")) != bool(pack.get("test"))]
+    if bad:
+        raise ValueError(f"다른 연결망, 대상지, 시험 표시의 기록 {len(bad)}건이 섞여 있습니다: {bad[:5]}")
+
+
+# 경로 입력 --------------------------------------------------------------------
+VALUE_RESULTS = ("ok", "stopped")
+BLOCK_RESULTS = ("temp_block", "no_entry", "not_path")
+
+
+def measured_len(r):
+    if r["end"] is None:
+        return 0.0
+    return continued(r["end"], r["start"], r["breaks"])
+
+
+def choose_runs(S, runs=None):
+    """구간마다 경로 값에 쓸 구간 측정을 고른다.
+    닫힌 측정 가운데 값을 잰 것(ok, 끝까지 못 감)만 고르고, 경로 줄, 다 잼(ok이고 못 잰 항목 없음), 잰 길이, 나중 순이다.
+    길 아님, 출입 금지, 일시 막힘은 값을 지우지 않고 구간 상태(blocked)로 얹는다. runs: {구간: 측정 번호}로 사람이 바꾼다."""
+    runs = {str(k): v for k, v in (runs or {}).items()}
+    by_seg = {}
+    for rid in S["order"]:
+        by_seg.setdefault(S["runs"][rid]["seg"], []).append(S["runs"][rid])
+    best, blocked = {}, {}
+    for seg, rs in by_seg.items():
+        closed = [r for r in rs if r["closed"]]
+        later_block = [r for r in closed if r["result"] in BLOCK_RESULTS]
+        if later_block:
+            blocked[seg] = later_block[-1]["result"]
+        pick = runs.get(str(seg))
+        if pick and pick in S["runs"] and S["runs"][pick]["seg"] == seg:
+            best[seg] = S["runs"][pick]
+            continue
+        cand = [r for r in closed if r["result"] in VALUE_RESULTS]
+        if cand:
+            rank = lambda x: (x["route_line"], x["result"] == "ok" and not x["missing"], measured_len(x), S["order"].index(x["id"]))
+            best[seg] = max(cand, key=rank)
+        elif closed:
+            best[seg] = closed[-1]
+        else:
+            best[seg] = rs[-1]
+    return best, blocked
+
+
+def route_input(events, pack, overrides=None, allow_test=False, runs=None):
     overrides = overrides or {}
+    no_why = [k for k, o in overrides.items() if not str(o.get("why") or "").strip()]
+    if no_why:
+        raise ValueError(f"저녁 확인 값에 이유(why)가 없습니다: {no_why[:5]}")
     S = fold(events)
+    check_events(S, pack, allow_test)
     rules = pack["rules"]
     retro = retro_fail_from(S)
-    best = choose_runs(S)
+    best, blocked = choose_runs(S, runs)
     segments, values, barriers, surfaces = [], [], [], []
     for seg_id, r in best.items():
         seg = seg_info(S, pack, seg_id)
@@ -245,37 +406,37 @@ def route_input(events, pack, overrides=None, allow_test=False):
             continue
         second = r["from"] == seg["b"]
         reached = r["result"] == "ok" and r["end"] is not None
-        status = run_status(r)
+        missing = sorted(value_missing(r, seg, rules))
+        status = "open" if not r["closed"] else ("partial" if r["result"] == "ok" and missing else run_status(r))
         reached_m = None
         if r["end"] is not None:
             reached_m = continued(r["end"], r["start"], r["breaks"])
         segments.append({
             "seg": seg_id, "run": r["id"], "from": r["from"], "second": second, "line": r["line"], "route_line": r["route_line"], "status": status,
-            "result": r["result"], "reached_m": reached_m, "planned_stop": r["planned"], "missing": r["missing"], "wet": r["wet"], "retry": r["retry"],
+            "result": r["result"], "reached_m": reached_m, "planned_stop": r["planned"], "missing": missing, "wet": r["wet"], "retry": r["retry"],
             "other_runs": [x for x in S["order"] if S["runs"][x]["seg"] == seg_id and x != r["id"]],
+            "blocked": blocked.get(seg_id), "no_barrier": r.get("no_barrier"), "twin": r.get("twin"),
         })
+        # 길 아님으로 닫은 측정의 값은 경로 값에 넣지 않는다(새 길로 옮기지 못한 값)
+        if r["result"] == "not_path":
+            continue
         for p in r["points"]:
             method = p.get("method") or "one"
-            lg = long_route(p.get("values") or [], method)
+            raw = p.get("values") or []
+            lg = long_route(raw, method)
             cross_vals = p.get("cross") or []
             cr = cross_route(cross_vals, "both" if len(cross_vals) == 2 else method)
             flags = point_flags(p, retro, rules)
             if p["_id"] in overrides:
                 o = overrides[p["_id"]]
                 lg = o.get("long", lg)
-                flags = [f for f in flags if f != "boundary"] + ["evening"]
-            if lg is None:
-                s, slg = map_position(seg["len"], p["mark"], r["start"], r["end"], r["breaks"], second, reached, None, r["breaks"][: p.get("breakCount", len(r["breaks"]))])
-            else:
-                s, slg = map_position(seg["len"], p["mark"], r["start"], r["end"], r["breaks"], second, reached, lg, r["breaks"][: p.get("breakCount", len(r["breaks"]))])
-            mag = abs(slg) if slg is not None else None
-            unc = []
-            if mag is not None and in_ranges(mag, [rules["uncertain"]["manual_long"]]):
-                unc.append("manual")
-            if mag is not None and in_ranges(mag, [rules["uncertain"]["power_long"]]):
-                unc.append("power")
-            if "boundary" in flags or "tool_fail" in flags:
-                unc = ["manual", "power", "stroller"]
+                flags = [f for f in flags if f not in ("boundary", "both_sign")] + ["evening"]
+            mb = r["breaks"][: p.get("breakCount", len(r["breaks"]))]
+            s, slg = map_position(seg["len"], p["mark"], r["start"], r["end"], r["breaks"], second, reached, lg, mb)
+            s, out = clip(s, seg["len"])
+            if out:
+                flags = flags + ["out_of_seg"]
+            unc = uncertain_modes(slg, flags, raw if p["_id"] not in overrides else [], rules)
             if unc:
                 flags = flags + ["uncertain"]
             values.append({
@@ -283,23 +444,38 @@ def route_input(events, pack, overrides=None, allow_test=False):
                 "cross": cr, "cross_pct": math.tan(math.radians(cr)) * 100 if cr is not None else None, "kind": p.get("kind"), "method": method,
                 "raw": p.get("values"), "raw_cross": cross_vals, "mark": p["mark"], "flags": flags, "uncertain_for": unc, "at": p["_at"], "rev": p["_rev"],
             })
-        pos = lambda m: None if m is None else map_position(seg["len"], m, r["start"], r["end"], r["breaks"], second, reached, 0.0)[0]
         for b in r["barriers"]:
-            barriers.append({**{k: v for k, v in b.items() if not k.startswith("_")}, "event": b["_id"], "seg": seg_id, "s": pos(b.get("mark")), "s_end": pos(b.get("mark_end")), "at": b["_at"], "rev": b["_rev"]})
+            ends = sorted(x for x in (clip(run_place(r, seg, b.get("mark"), b), seg["len"])[0], clip(run_place(r, seg, b.get("mark_end"), b), seg["len"])[0]) if x is not None)
+            item = {**{k: v for k, v in b.items() if not k.startswith("_")}, "event": b["_id"], "seg": seg_id, "s": ends[0] if ends else None, "s_end": ends[1] if len(ends) > 1 else None, "walk_second": second, "at": b["_at"], "rev": b["_rev"]}
+            item.update(barrier_route(b, rules))
+            barriers.append(item)
         for b in r["surfaces"]:
-            surfaces.append({**{k: v for k, v in b.items() if not k.startswith("_")}, "event": b["_id"], "seg": seg_id, "s": pos(b.get("mark")), "at": b["_at"]})
+            surfaces.append({**{k: v for k, v in b.items() if not k.startswith("_")}, "event": b["_id"], "seg": seg_id, "s": clip(run_place(r, seg, b.get("mark"), b), seg["len"])[0], "at": b["_at"]})
+
+    def placed(rec):
+        r = S["runs"].get(rec.get("_run"))
+        seg = seg_info(S, pack, r["seg"]) if r else None
+        if not seg:
+            return {"run": rec.get("_run"), "seg": None, "s": None}
+        return {"run": r["id"], "seg": r["seg"], "s": clip(run_place(r, seg, rec.get("mark"), rec), seg["len"])[0]}
+
     facilities = []
     for f in S["facilities"]:
-        r = S["runs"].get(f.get("_run"))
         item = {k: v for k, v in f.items() if not k.startswith("_")}
-        item.update(event=f["_id"], seg=r["seg"] if r else None, at=f["_at"], gps=f.get("_gps"))
+        item.update(event=f["_id"], at=f["_at"], gps=f.get("_gps"), **placed(f))
         facilities.append(item)
+    map_checks = []
+    for m in S["map_checks"]:
+        item = {k: v for k, v in m.items() if not k.startswith("_")}
+        item.update(event=m["_id"], at=m["_at"], **placed(m))
+        map_checks.append(item)
     digest = hashlib.sha256(json.dumps(sorted(e["id"] for e in S["events"])).encode()).hexdigest()[:12]
     return {
         "format": FORMAT, "site": pack["site"], "net": pack["net"], "pack": pack.get("hash"), "rules": rules.get("version"), "test": bool(pack.get("test")),
         "built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "events_hash": digest, "event_count": len(S["events"]),
-        "segments": segments, "values": values, "barriers": barriers, "surfaces": surfaces, "facilities": facilities,
-        "map_checks": [{k: v for k, v in m.items() if not k.startswith("_")} for m in S["map_checks"]],
+        "event_versions": sorted({f"{e.get('app')}/{e.get('pack')}/{e.get('rules')}" for e in S["events"]}),
+        "overrides_hash": hashlib.sha256(json.dumps(overrides, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12] if overrides else None,
+        "segments": segments, "values": values, "barriers": barriers, "surfaces": surfaces, "facilities": facilities, "map_checks": map_checks,
         "new_paths": list(S["new_paths"].values()), "route_choice": {k: v for k, v in (S["route_choice"] or {}).items() if not k.startswith("_")} or None,
         "tool_checks": [{k: v for k, v in t.items() if not k.startswith("_")} | {"at": t["_at"]} for t in S["tool_checks"]],
     }
@@ -323,6 +499,10 @@ def dist_polyline(px, py, xy):
     return best
 
 
+def local_day(iso):
+    return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone().date().isoformat()
+
+
 def inspect(events, pack):
     S = fold(events)
     rules = pack["rules"]
@@ -336,64 +516,94 @@ def inspect(events, pack):
         if e.get("net") and e["net"] != pack["net"]:
             add("net_mismatch", f"다른 연결망의 기록: {e['id']}", event=e["id"])
             break
+    for e in S["events"]:
+        if bool(e.get("test")) != bool(pack.get("test")):
+            add("test_mismatch", f"시험 표시가 자료와 다른 기록: {e['id']}", event=e["id"])
+            break
+    vers = {(e.get("pack"), e.get("rules")) for e in S["events"] if e.get("pack") or e.get("rules")}
+    if any(p_ and p_ != pack.get("hash") or r_ and r_ != rules.get("version") for p_, r_ in vers):
+        add("pack_mismatch", f"자료 판이나 규칙표 판이 다른 기록이 있습니다: {sorted(map(str, vers))[:4]}")
     for dev, seqs in S["seq"].items():
-        want = set(range(min(seqs), max(seqs) + 1)) if seqs else set()
+        want = set(range(1, max(seqs) + 1)) if seqs else set()
         missing = sorted(want - set(seqs))
         if missing:
             add("seq_gap", f"폰 {dev}의 빠진 일련번호 {len(missing)}개: {missing[:10]}")
+    for o in S["orphans"]:
+        add("orphan", f"붙을 구간 측정이 없는 {o['kind']} 기록: {o['id']}", event=o["id"])
 
+    # 아침 점검: 측정한 날마다 출발 전 수평계 점검이 있어야 한다
+    days = {d.get("date") or local_day(d["_at"]) for d in S["days"]}
+    checked = {local_day(t["_at"]) for t in S["tool_checks"] if t.get("tool") == "level" and t.get("when") == "before"}
+    for d in sorted(days - checked):
+        add("no_morning_check", f"{d}: 출발 전 도구 점검 기록이 없습니다")
+
+    retro = retro_fail_from(S)
     photo_need = {}
+    by_seg = {}
     for rid in S["order"]:
         r = S["runs"][rid]
+        by_seg.setdefault(r["seg"], []).append(r)
         seg = seg_info(S, pack, r["seg"])
         if not seg:
             add("unknown_seg", f"구간표에 없는 구간 {r['seg']}", seg=r["seg"], run=rid)
             continue
+        measured = measured_len(r) if r["end"] is not None else None
         if not r["closed"]:
             add("open_run", f"구간 확인 없는 구간 {r['seg']}", seg=r["seg"], run=rid)
-        elif r["end"] is not None and r["result"] == "ok":
-            measured = continued(r["end"], r["start"], r["breaks"])
+        elif measured is not None and r["result"] == "ok":
             if length_mismatch(measured, seg["len"], rules):
                 add("length", f"구간 {r['seg']}: 잰 길이 {measured:.1f} m, 지도 {seg['len']:.1f} m", seg=r["seg"], run=rid)
-        for m in r["missing"]:
+        elif measured is not None and r["result"] == "stopped" and measured > seg["len"] + Ck["len_m"] + EPS:
+            add("length", f"구간 {r['seg']}: 끝까지 못 감인데 잰 길이 {measured:.1f} m가 지도 {seg['len']:.1f} m보다 깁니다", seg=r["seg"], run=rid)
+        for m in sorted(value_missing(r, seg, rules)):
             add("missing", f"구간 {r['seg']} 못 잰 항목: {m}", seg=r["seg"], run=rid)
         prev_mark = None
-        max_mark = None
-        prev_long = None
+        pts = []
         for p in r["points"]:
             d = continued(p["mark"], r["start"], r["breaks"][: p.get("breakCount", len(r["breaks"]))])
             method = p.get("method") or "one"
-            lg = long_route(p.get("values") or [], method)
+            raw = p.get("values") or []
+            lg = long_route(raw, method)
             cross_vals = p.get("cross") or []
-            cr = cross_route(cross_vals, "both" if len(cross_vals) == 2 else method)
             tag = f"구간 {r['seg']} 표시값 {p['mark']}"
-            if lg is not None and abs(lg) > R["long"] + EPS:
-                add("range_long", f"{tag}: 앞뒤 {lg}°", seg=r["seg"], run=rid, event=p["_id"])
-            if cr is not None and abs(cr) > R["cross"] + EPS:
-                add("range_cross", f"{tag}: 좌우 {cr}°", seg=r["seg"], run=rid, event=p["_id"])
+            if any(abs(v) > R["long"] + EPS for v in raw):
+                add("range_long", f"{tag}: 앞뒤 원값 {raw}", seg=r["seg"], run=rid, event=p["_id"])
+            if any(abs(v) > R["cross"] + EPS for v in cross_vals):
+                add("range_cross", f"{tag}: 좌우 원값 {cross_vals}", seg=r["seg"], run=rid, event=p["_id"])
+            if both_sign(p):
+                add("both_sign", f"{tag}: 양 끝 두 값 {raw}의 부호가 다릅니다", seg=r["seg"], run=rid, event=p["_id"])
             kind = p.get("kind")
-            if kind != "more":
+            if kind != "more" and not p.get("added"):
                 if prev_mark is not None and d < prev_mark - EPS:
                     add("mark_down", f"{tag}: 표시값이 줄어듦", seg=r["seg"], run=rid, event=p["_id"])
-                if max_mark is not None and d - max_mark > Ck["gap_m"] + EPS:
-                    add("gap", f"{tag}: 앞 지점과 {d - max_mark:.1f} m", seg=r["seg"], run=rid, event=p["_id"])
                 prev_mark = d
-            if prev_long is not None and lg is not None and abs(prev_long - lg) > Ck["neighbor_deg"] + EPS:
-                add("neighbor", f"{tag}: 이웃과 {abs(prev_long - lg):.1f}° 차이", seg=r["seg"], run=rid, event=p["_id"])
             if lg is not None:
-                prev_long = lg
-            max_mark = d if max_mark is None else max(max_mark, d)
+                pts.append((d, lg, p))
             if "boundary" in point_flags(p, None, rules):
                 add("boundary", f"{tag}: 경계 값. 사진과 메모로 정하세요", seg=r["seg"], run=rid, event=p["_id"])
-            need = p.get("photos_required") or 0
-            photo_need[p["_id"]] = (need, tag, r["seg"], rid)
+            s, _ = map_position(seg["len"], p["mark"], r["start"], r["end"], r["breaks"], r["from"] == seg["b"], r["result"] == "ok" and r["end"] is not None, 0.0, r["breaks"][: p.get("breakCount", len(r["breaks"]))])
+            if clip(s, seg["len"])[1]:
+                add("out_of_seg", f"{tag}: 위치 {s:.1f} m가 구간(0~{seg['len']:.1f} m) 밖입니다", seg=r["seg"], run=rid, event=p["_id"])
+            photo_need[p["_id"]] = (p.get("photos_required") or 0, tag, r["seg"], rid)
+        # 공백과 이웃은 위치 순서로 본다. 시작과 끝(못 갔으면 멈춘 곳)을 넣는다.
+        pts.sort(key=lambda x: x[0])
+        if pts and r["closed"] and r["result"] in VALUE_RESULTS and seg["len"] >= rules["slope"]["short_skip"]:
+            stops = [0.0] + [x[0] for x in pts] + ([measured] if measured is not None else [])
+            for a_, b_ in zip(stops, stops[1:]):
+                if b_ - a_ > Ck["gap_m"] + EPS:
+                    add("gap", f"구간 {r['seg']}: {a_:.1f}~{b_:.1f} m 사이 {b_ - a_:.1f} m에 잰 지점이 없습니다", seg=r["seg"], run=rid)
+        for (d1, l1, _p1), (d2, l2, p2) in zip(pts, pts[1:]):
+            if abs(l1 - l2) > Ck["neighbor_deg"] + EPS:
+                add("neighbor", f"구간 {r['seg']} 표시값 {p2['mark']}: 이웃과 {abs(l1 - l2):.1f}° 차이", seg=r["seg"], run=rid, event=p2["_id"])
         for b in r["barriers"] + r["surfaces"]:
             need = b.get("photos_required") or 0
             photo_need[b["_id"]] = (need, f"구간 {r['seg']} {b.get('type') or '노면'} 표시값 {b.get('mark')}", r["seg"], rid)
-            if b.get("type") == "bump" and b.get("value") is not None and b["value"] > R["bump_mm"]:
-                add("range_bump", f"구간 {r['seg']}: 턱 {b['value']} mm", seg=r["seg"], run=rid, event=b["_id"])
-            if b.get("type") in ("width_rep", "narrow") and b.get("value") is not None and not (R["width_cm"][0] <= b["value"] <= R["width_cm"][1]):
-                add("range_width", f"구간 {r['seg']}: 폭 {b['value']} cm", seg=r["seg"], run=rid, event=b["_id"])
+            if b.get("type") == "bump" and any(v is not None and v > R["bump_mm"] for v in (b.get("value"), b.get("value2"))):
+                add("range_bump", f"구간 {r['seg']}: 턱 {b.get('value')}, {b.get('value2')} mm", seg=r["seg"], run=rid, event=b["_id"])
+            if b.get("type") in ("width_rep", "narrow") and any(v is not None and not (R["width_cm"][0] <= v <= R["width_cm"][1]) for v in (b.get("value"), b.get("value2"), b.get("min_cm"))):
+                add("range_width", f"구간 {r['seg']}: 폭 {b.get('value')}, {b.get('value2')} cm", seg=r["seg"], run=rid, event=b["_id"])
+            if b.get("type") == "driveway" and ((b.get("cross") or 0) > R["cross"] + EPS or (b.get("bump_mm") or 0) > R["bump_mm"]):
+                add("range_driveway", f"구간 {r['seg']}: 차량 진출입부 좌우 {b.get('cross')}°, 턱 {b.get('bump_mm')} mm", seg=r["seg"], run=rid, event=b["_id"])
         if r["gps"] and pack.get("map"):
             ds = []
             for g in r["gps"]:
@@ -403,30 +613,68 @@ def inspect(events, pack):
                 ds.append(dist_polyline(x, y, seg["xy"]) * pack["map"]["mpp"])
             if ds and sum(ds) / len(ds) > Ck["mean_dist_m"]:
                 add("gps_far", f"구간 {r['seg']}: 기록 위치가 고른 선에서 평균 {sum(ds) / len(ds):.0f} m", seg=r["seg"], run=rid)
+    for seg_id, rs in by_seg.items():
+        if sum(1 for r in rs if r["closed"]) > 1:
+            add("multi_run", f"구간 {seg_id}: 닫힌 측정 {sum(1 for r in rs if r['closed'])}개. 경로에 쓸 측정을 확인하세요(--runs)", seg=seg_id)
     for f in S["facilities"]:
         photo_need[f["_id"]] = (f.get("photos_required") or 0, f"시설 {f.get('type')}", None, f.get("_run"))
+        for k in ("slope", "slope_low", "slope_mid", "slope_top"):
+            if f.get(k) is not None and abs(f[k]) > R["long"] + EPS:
+                add("range_facility", f"시설 {f.get('type')}: {k} {f[k]}°", run=f.get("_run"), event=f["_id"])
+    for m in S["map_checks"]:
+        photo_need[m["_id"]] = (m.get("photos_required") or 0, f"지도 표시 확인 {m.get('what')}", None, m.get("_run"))
     for i, (need, tag, seg, rid) in photo_need.items():
         got = S["photos"].get(i, 0)
         if got < need:
             add("photos", f"{tag}: 사진 요구 {need}장, 찍음 {got}장", seg=seg, run=rid, event=i)
 
-    measured_segs = {S["runs"][x]["seg"] for x in S["order"]}
+    # 구간 사이 공백: 걷는 순서의 이웃 구간에서 앞 구간 끝 공백 + 안 잰 구간 + 다음 구간 시작 공백
+    best, _ = choose_runs(S)
     walks = pack.get("walks") or {}
     choice = (S["route_choice"] or {}).get("route") or "11"
+    carry = None
+    for w in walks.get(choice, []):
+        if (w.get("move") or 0) > 3:
+            carry = None
+        seg = seg_info(S, pack, w["seg"])
+        r = best.get(w["seg"])
+        ds = []
+        if seg and r and r["closed"] and r["result"] in VALUE_RESULTS:
+            for p in r["points"]:
+                if not p.get("values"):
+                    continue
+                s, _ = map_position(seg["len"], p["mark"], r["start"], r["end"], r["breaks"], r["from"] == seg["b"], r["result"] == "ok" and r["end"] is not None, 0.0, r["breaks"][: p.get("breakCount", len(r["breaks"]))])
+                s = clip(s, seg["len"])[0]
+                ds.append(s if w["from"] == seg["a"] else seg["len"] - s)
+        if not seg:
+            carry = None
+            continue
+        if not ds:
+            carry = None if carry is None else carry + seg["len"]
+            continue
+        head = min(ds)
+        if carry is not None and carry + head > Ck["gap_m"] + EPS:
+            add("gap_between", f"구간 {w['seg']} 앞: 앞 구간의 마지막 지점에서 {carry + head:.1f} m 동안 잰 지점이 없습니다", seg=w["seg"])
+        carry = seg["len"] - max(ds)
+
+    measured_segs = {S["runs"][x]["seg"] for x in S["order"]}
     for w in walks.get(choice, []):
         if w["seg"] not in measured_segs:
             add("unvisited", f"순서에 있는데 안 잰 구간 {w['seg']}", seg=w["seg"])
     for t in S["tool_checks"]:
         if t.get("passed") is False and t.get("tool") != "phone_setup":
             add("tool_fail", f"도구 점검 실패: {t.get('tool')} ({t.get('when')}), 값 {t.get('values')}")
-    return {"issues": issues, "state": S}
+    return {"issues": issues, "state": S, "retro": retro}
 
 
-REDO_CODES = {"length", "range_long", "range_cross", "mark_down", "gap", "neighbor", "gps_far", "open_run", "unvisited", "missing"}
+REDO_CODES = {"length", "range_long", "range_cross", "mark_down", "gap", "gap_between", "neighbor", "both_sign", "gps_far", "open_run", "unvisited", "missing", "out_of_seg"}
 LABEL = {
-    "length": "길이 차이", "range_long": "앞뒤 범위 밖", "range_cross": "좌우 범위 밖", "range_bump": "턱 범위 밖", "range_width": "폭 범위 밖", "mark_down": "표시값 감소",
-    "gap": "11 m 넘는 공백", "neighbor": "이웃과 3° 넘는 차이", "boundary": "경계 값", "open_run": "구간 확인 없음", "photos": "사진 부족", "missing": "못 잰 항목",
-    "unvisited": "안 잰 순위 구간", "gps_far": "위치가 선에서 멂", "tool_fail": "도구 점검 실패", "seq_gap": "일련번호 빠짐", "net_mismatch": "연결망 불일치", "unknown_seg": "없는 구간", "photo_files": "사진 파일 수",
+    "length": "길이 차이", "range_long": "앞뒤 범위 밖", "range_cross": "좌우 범위 밖", "range_bump": "턱 범위 밖", "range_width": "폭 범위 밖", "range_driveway": "차량 진출입부 범위 밖",
+    "range_facility": "시설 기울기 범위 밖", "mark_down": "표시값 감소", "gap": "11 m 넘는 공백", "gap_between": "구간 사이 11 m 넘는 공백", "neighbor": "이웃과 3° 넘는 차이",
+    "both_sign": "양 끝 부호 다름", "boundary": "경계 값", "open_run": "구간 확인 없음", "photos": "사진 부족", "missing": "못 잰 항목", "unvisited": "안 잰 순위 구간",
+    "gps_far": "위치가 선에서 멂", "tool_fail": "도구 점검 실패", "seq_gap": "일련번호 빠짐", "net_mismatch": "연결망 불일치", "test_mismatch": "시험 표시 불일치",
+    "pack_mismatch": "자료·규칙표 판 다름", "unknown_seg": "없는 구간", "photo_files": "사진 파일 수", "orphan": "붙을 곳 없는 기록", "no_morning_check": "아침 점검 없음",
+    "out_of_seg": "구간 밖 위치", "multi_run": "같은 구간 측정 여러 개",
 }
 
 
@@ -485,6 +733,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--photos")
     ap.add_argument("--overrides")
+    ap.add_argument("--runs")
+    ap.add_argument("--fixes")
     ap.add_argument("--allow-test", action="store_true")
     a = ap.parse_args()
     pack = json.loads(Path(a.pack).read_text(encoding="utf-8"))
@@ -498,17 +748,28 @@ def main():
         events = b["events"]
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
+    raw_events = events
+    if a.fixes:
+        events = apply_fixes(events, json.loads(Path(a.fixes).read_text(encoding="utf-8")), pack)
     report = inspect(events, pack)
     S = report["state"]
     overrides = json.loads(Path(a.overrides).read_text(encoding="utf-8")) if a.overrides else None
-    ri = route_input(events, pack, overrides, allow_test=a.allow_test)
+    runs = json.loads(Path(a.runs).read_text(encoding="utf-8")) if a.runs else None
+    ri = route_input(events, pack, overrides, allow_test=a.allow_test, runs=runs)
     (out / "경로입력.json").write_text(json.dumps(ri, ensure_ascii=False, indent=1), encoding="utf-8")
-    (out / "기록_원본.json").write_text(json.dumps(sort_events(events), ensure_ascii=False), encoding="utf-8")
+    (out / "기록_원본.json").write_text(json.dumps(sort_events(raw_events), ensure_ascii=False), encoding="utf-8")
 
     lines = [f"# 저녁 검사 결과 ({pack['site']})", "", f"- 기록 {len(S['events'])}건, 구간 측정 {len(S['order'])}개, 닫힌 것 {sum(1 for r in S['runs'].values() if r['closed'])}개", f"- 연결망 {pack['net']}, 규칙표 {pack['rules']['version']}", ""]
     if a.photos:
         pf, total = photo_files(a.photos, S)
-        lines += [f"사진 파일 {total}장", "", "| 구간 | 시간 안의 사진 |", "|---|---:|"] + [f"| {x['seg']} | {x['files']} |" for x in pf] + [""]
+        taken = {}
+        for e in S["events"]:
+            if e["kind"] == "photo" and e.get("run"):
+                taken[e["run"]] = taken.get(e["run"], 0) + 1
+        for x in pf:
+            if x["files"] != taken.get(x["run"], 0):
+                report["issues"].append({"code": "photo_files", "msg": f"구간 {x['seg']}: 시간 안의 사진 파일 {x['files']}장, 앱의 찍음 {taken.get(x['run'], 0)}장", "seg": x["seg"], "run": x["run"], "event": None})
+        lines += [f"사진 파일 {total}장", "", "| 구간 | 시간 안의 사진 | 앱의 찍음 |", "|---|---:|---:|"] + [f"| {x['seg']} | {x['files']} | {taken.get(x['run'], 0)} |" for x in pf] + [""]
     order = sorted(report["issues"], key=lambda i: (i["code"], str(i["seg"])))
     lines += ["| 종류 | 내용 |", "|---|---|"] + [f"| {LABEL.get(i['code'], i['code'])} | {i['msg']} |" for i in order]
     (out / "검사결과.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

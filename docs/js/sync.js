@@ -2,8 +2,15 @@
 import { clearPending, getMeta, importEvents, pendingBatch, setMeta } from "./store.js";
 
 const BATCH = 100;
+const TIMEOUT_MS = 20000;
 let cfg = null;
 let busy = false;
+
+// 응답 없는 요청 하나가 전송을 멈추지 않게 시간 제한을 건다.
+function fetchT(url, opts = {}) {
+  const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(TIMEOUT_MS) : undefined;
+  return fetch(url, { ...opts, signal });
+}
 
 export function configure(db) {
   cfg = db || null;
@@ -18,7 +25,7 @@ export async function currentUser() {
 
 export async function login(email, password) {
   if (!cfg) throw new Error("자료 파일에 데이터베이스 정보가 없습니다");
-  const r = await fetch(`${cfg.url}/auth/v1/token?grant_type=password`, {
+  const r = await fetchT(`${cfg.url}/auth/v1/token?grant_type=password`, {
     method: "POST",
     headers: { apikey: cfg.key, "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -44,13 +51,17 @@ async function token(force = false) {
   const s = await getMeta("session");
   if (!s) return null;
   if (!force && s.expires - Date.now() > 60000) return s.access;
-  const r = await fetch(`${cfg.url}/auth/v1/token?grant_type=refresh_token`, {
+  const r = await fetchT(`${cfg.url}/auth/v1/token?grant_type=refresh_token`, {
     method: "POST",
     headers: { apikey: cfg.key, "Content-Type": "application/json" },
     body: JSON.stringify({ refresh_token: s.refresh }),
   });
   if (!r.ok) {
-    if (r.status === 400 || r.status === 401) throw new Error("다시 로그인이 필요합니다");
+    if (r.status === 400 || r.status === 401) {
+      // 갱신이 거절되면 세션을 지운다. 그래야 로그인 버튼이 다시 나온다. 대기 표시는 남아 다시 로그인하면 모두 간다.
+      await setMeta("session", null, true);
+      throw new Error("다시 로그인이 필요합니다");
+    }
     throw new Error(`토큰 갱신 실패 (${r.status})`);
   }
   await saveSession(await r.json(), s.email);
@@ -67,7 +78,7 @@ function toRow(e) {
 }
 
 async function postRows(rows, t) {
-  return fetch(`${cfg.url}/rest/v1/field_records?on_conflict=id`, {
+  return fetchT(`${cfg.url}/rest/v1/field_records?on_conflict=id`, {
     method: "POST",
     headers: headers(t, { Prefer: "resolution=ignore-duplicates,return=minimal" }),
     body: JSON.stringify(rows),
@@ -104,7 +115,7 @@ export async function pushPending() {
 }
 
 // 빈 폰에 데이터베이스에서 내려받는다.
-export async function pullAll(site) {
+export async function pullAll(site, keep = () => true) {
   if (!cfg) throw new Error("자료 파일에 데이터베이스 정보가 없습니다");
   let t = await token();
   if (!t) throw new Error("로그인이 필요합니다");
@@ -114,14 +125,14 @@ export async function pullAll(site) {
   let total = 0;
   for (;;) {
     const url = `${cfg.url}/rest/v1/field_records?select=payload&payload->>site=eq.${encodeURIComponent(site)}&order=recorded_at.asc,id.asc&limit=${size}&offset=${offset}`;
-    let r = await fetch(url, { headers: headers(t) });
+    let r = await fetchT(url, { headers: headers(t) });
     if (r.status === 401) {
       t = await token(true);
-      r = await fetch(url, { headers: headers(t) });
+      r = await fetchT(url, { headers: headers(t) });
     }
     if (!r.ok) throw new Error(`내려받기 실패 (${r.status})`);
     const rows = await r.json();
-    const res = await importEvents(rows.map((x) => x.payload), { markPending: false });
+    const res = await importEvents(rows.map((x) => x.payload).filter(keep), { markPending: false });
     added += res.added;
     total += rows.length;
     if (rows.length < size) break;

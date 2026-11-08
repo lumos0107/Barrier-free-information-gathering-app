@@ -42,9 +42,10 @@ export function continued(mark, start, breaks = []) {
 const inFine = (m, fine) => fine.some(([a, b]) => m > a + EPS && m <= b + EPS);
 
 // 매뉴얼 5장 다, 4장 가: 앞으로 잴 자리. 표시값이 아니라 출발 마디에서 잰 거리다.
-export function planMarks(len, fine = [], stop = null, rules) {
+// inclines: 구간표의 지도 경사 표시. 3 m 미만 구간도 표시가 있으면 가운데 1곳을 잰다(5장 다 3).
+export function planMarks(len, fine = [], stop = null, rules, inclines = null) {
   const S = rules.slope;
-  if (len < S.short_skip) return [];
+  if (len < S.short_skip) return inclines && inclines.some((v) => v > 0) ? [{ mark: round1(len / 2), kind: "gap", both: false, cross: true }] : [];
   if (len < S.short_mid) return [{ mark: round1(len / 2), kind: "gap", both: false, cross: true }];
   const limit = stop ?? len;
   const out = new Map();
@@ -70,26 +71,43 @@ export function planMarks(len, fine = [], stop = null, rules) {
 }
 
 // 아직 안 잰 자리. 값이 3.2° 이상인 간격 지점에는 앞뒤 5 m가 더해진다. 1순위 범위에서는 더하지 않는다.
-export function pendingMarks(plan, saved, len, fine = [], rules) {
+// 저장한 값 하나는 허용 폭 안의 가장 가까운 예정 지점 하나만 지운다. '여기 더 재기'(added)는 지우지 않는다.
+// stop: 계획된 중단 거리. 그 너머로는 더하지 않는다.
+export function pendingMarks(plan, saved, len, fine = [], rules, stop = null) {
   const S = rules.slope;
-  const taken = (m) => saved.some((p) => Math.abs(p.mark - m) <= S.match_tol + EPS);
-  const extras = [];
+  const limit = stop ?? len;
+  const near = (a, b) => Math.abs(a - b) <= S.match_tol + EPS;
+  const pool = plan.map((p) => ({ ...p }));
   for (const p of saved) {
     if (p.kind === "more" || p.long == null) continue;
     if (inFine(p.mark, fine)) continue;
     if (!atLeast(Math.abs(p.long), S.more_from)) continue;
     for (const d of [-S.more_dist, S.more_dist]) {
       const m = round1(p.mark + d);
-      if (m > EPS && m < len - EPS) extras.push({ mark: m, kind: "more", both: false, cross: true });
+      if (m > EPS && m < limit - EPS && !pool.some((x) => near(x.mark, m))) pool.push({ mark: m, kind: "more", both: false, cross: true });
     }
   }
-  const out = plan.filter((p) => !taken(p.mark));
-  for (const e of extras) {
-    if (taken(e.mark)) continue;
-    if (out.some((p) => Math.abs(p.mark - e.mark) <= S.match_tol + EPS)) continue;
-    out.push(e);
+  const used = new Set();
+  for (const p of saved) {
+    if (p.added) continue;
+    let best = -1;
+    for (let i = 0; i < pool.length; i += 1) {
+      if (used.has(i) || !near(pool[i].mark, p.mark)) continue;
+      if (best < 0 || Math.abs(pool[i].mark - p.mark) < Math.abs(pool[best].mark - p.mark)) best = i;
+    }
+    if (best >= 0) used.add(best);
   }
-  return out.sort((p, q) => p.mark - q.mark);
+  return pool.filter((_, i) => !used.has(i)).sort((p, q) => p.mark - q.mark);
+}
+
+// 남은 지점을 다음 차례(ahead)와 지나친 것(behind)으로 나눈다. 더한 지점(more)은 뒤에 있어도 차례에 둔다.
+// 지나친 예정 지점은 다음 일로 되돌아가지 않고 구간 끝에서 못 잰 지점으로 센다.
+export function splitPending(pending, saved, rules) {
+  const top = saved.filter((p) => p.kind !== "more" && !p.added).reduce((m, p) => Math.max(m, p.mark), -Infinity);
+  const ahead = [];
+  const behind = [];
+  for (const p of pending) (p.kind === "more" || p.mark >= top - rules.slope.match_tol - EPS ? ahead : behind).push(p);
+  return { ahead, behind };
 }
 
 export const needLongRecheck = (long, fineBoth, rules) => fineBoth || inRanges(Math.abs(long), rules.slope.long_recheck);
@@ -159,11 +177,15 @@ export function fixedValue(digits, decimals) {
 
 // 사건을 처음부터 쌓아 지금 상태를 만든다 --------------------------------------
 const timeOf = (e) => Date.parse(e.at) || 0;
+// 순서 번호(ord): 쓸 때의 시각과 그 폰이 본 마지막 순서 번호 + 1 중 큰 값이다.
+// 시계가 뒤로 가거나 느린 예비 폰으로 이어 써도 순서가 유지된다. 번호가 없는 옛 기록은 시각(ms)을 쓴다.
+export const orderOf = (e) => (typeof e.ord === "number" ? e.ord : timeOf(e));
+export const nextOrd = (now, maxSeen) => Math.max(now, (maxSeen || 0) + 1);
 
 export function sortEvents(events) {
   const seen = new Map();
   for (const e of events) if (!seen.has(e.id)) seen.set(e.id, e);
-  return [...seen.values()].sort((a, b) => timeOf(a) - timeOf(b) || String(a.dev).localeCompare(String(b.dev)) || (a.seq || 0) - (b.seq || 0));
+  return [...seen.values()].sort((a, b) => orderOf(a) - orderOf(b) || String(a.dev).localeCompare(String(b.dev)) || (a.seq || 0) - (b.seq || 0));
 }
 
 function effectiveRecords(sorted) {
@@ -180,18 +202,24 @@ function effectiveRecords(sorted) {
     const fx = fixes.get(e.id);
     if (!fx) return { ...e.data, id: e.id, at: e.at, gps: e.gps, by: e.by, rev: 1 };
     const data = { ...e.data };
-    for (const f of fx) Object.assign(data, f.data.data);
+    for (const f of fx) {
+      Object.assign(data, f.data.data);
+      for (const k of f.data.unset || []) delete data[k];
+    }
     return { ...data, id: e.id, at: e.at, gps: e.gps, by: e.by, rev: fx.length + 1, original: e.data, fixedAt: fx[fx.length - 1].at };
   };
 }
 
-export function foldEvents(events, rules = null) {
+// 끊김 수는 저장값이 아니라 쌓는 순서로 센다. 앞의 끊김을 지워도 뒤 기록이 다음 끊김을 받지 않는다.
+const withBreaks = (rec, run) => (run ? { ...rec, breakCount: run.breaks.length } : rec);
+
+export function foldEvents(events, rules = null, dev = null) {
   const sorted = sortEvents(events);
   const eff = effectiveRecords(sorted);
   const s = {
     eventCount: sorted.length, day: null, people: { measurer: "", recorder: "", since: null },
     runs: {}, runOrder: [], openRun: null, segStatus: {}, redo: [], skipped: [], routeChoice: null,
-    levelMode: null, toolChecks: [], newPaths: {}, facilities: [], mapChecks: [], loose: [], photos: {}, lastSeq: {},
+    levelMode: null, toolChecks: [], newPaths: {}, facilities: [], mapChecks: [], loose: [], photos: {}, lastSeq: {}, maxOrd: 0,
   };
   const pushRun = (e, list, rec) => {
     const run = s.runs[e.run];
@@ -201,6 +229,7 @@ export function foldEvents(events, rules = null) {
 
   for (const e of sorted) {
     s.lastSeq[e.dev] = Math.max(s.lastSeq[e.dev] || 0, e.seq || 0);
+    s.maxOrd = Math.max(s.maxOrd, orderOf(e));
     if (e.kind === "photo") {
       if (e.data.of) s.photos[e.data.of] = (s.photos[e.data.of] || 0) + 1;
       if (e.run && s.runs[e.run]) s.runs[e.run].photoCount += 1;
@@ -227,7 +256,7 @@ export function foldEvents(events, rules = null) {
           id: e.id, seg: rec.seg, from: rec.from, start: rec.start ?? 0, line: rec.line || "main", routeLine: !!rec.routeLine,
           retry: rec.retry || "", startedAt: e.at, closed: false, end: null, result: null, missing: [], points: [], barriers: [],
           surfaces: [], breaks: [], photoCount: 0, wet: !!rec.wet, memo: rec.memo || "", planned_stop: rec.planned_stop ?? null,
-          by: e.by, endId: null,
+          by: e.by, endId: null, dev: e.dev,
         };
         s.runOrder.push(e.id);
         s.openRun = e.id;
@@ -239,30 +268,36 @@ export function foldEvents(events, rules = null) {
         if (run) {
           Object.assign(run, rec.changes);
           if (rec.changes.seg != null) s.segStatus[rec.changes.seg] = run.closed ? statusOf(run) : "open";
-          if (rec.prev_seg != null) delete s.segStatus[rec.prev_seg];
+          if (rec.prev_seg != null) {
+            // 옛 구간은 남은 측정의 상태로 돌린다. 남은 측정이 없으면 안 잰 구간이다.
+            const rest = s.runOrder.map((id) => s.runs[id]).filter((r) => r.seg === rec.prev_seg);
+            const last = rest[rest.length - 1];
+            if (last) s.segStatus[rec.prev_seg] = last.closed ? statusOf(last) : "open";
+            else delete s.segStatus[rec.prev_seg];
+          }
         }
         break;
       }
       case "slope": {
         const run = s.runs[e.run];
-        const pt = slopePoint(rec, s.levelMode, rules, run ? run.points.length === 0 : false);
+        const pt = slopePoint(withBreaks(rec, run), s.levelMode, rules, run ? run.points.length === 0 : false);
         pushRun(e, "points", pt);
         break;
       }
       case "barrier":
-        pushRun(e, "barriers", rec);
+        pushRun(e, "barriers", withBreaks(rec, s.runs[e.run]));
         break;
       case "surface":
-        pushRun(e, "surfaces", rec);
+        pushRun(e, "surfaces", withBreaks(rec, s.runs[e.run]));
         break;
       case "break":
         pushRun(e, "breaks", rec);
         break;
       case "facility":
-        s.facilities.push({ ...rec, run: e.run || null });
+        s.facilities.push({ ...withBreaks(rec, s.runs[e.run]), run: e.run || null });
         break;
       case "map_check":
-        s.mapChecks.push({ ...rec, run: e.run || null });
+        s.mapChecks.push({ ...withBreaks(rec, s.runs[e.run]), run: e.run || null });
         break;
       case "new_path":
         s.newPaths[rec.no] = rec;
@@ -302,6 +337,11 @@ export function foldEvents(events, rules = null) {
         break;
     }
   }
+  // 열린 구간: 이 폰이 시작한 것 가운데 마지막. 없으면 열린 것 가운데 마지막(예비 폰이 이어 쓸 때).
+  // 다른 폰 기록을 합쳐도 이 폰에서 재던 구간이 바뀌지 않는다.
+  const open = s.runOrder.filter((id) => !s.runs[id].closed);
+  const mine = dev ? open.filter((id) => s.runs[id].dev === dev) : [];
+  s.openRun = (mine.length ? mine : open).slice(-1)[0] ?? null;
   return s;
 }
 
@@ -315,15 +355,13 @@ function statusOf(run) {
 }
 
 function slopePoint(rec, levelMode, rules, first) {
-  const flags = [...(rec.flags || [])];
+  // 경계 표시는 저장값을 믿지 않고 값으로 다시 정한다. 고친 뒤 옛 표시가 남지 않게 한다.
+  const flags = (rec.flags || []).filter((f) => !(rules && f === "boundary"));
   if (levelMode && !flags.includes("tool_fail")) flags.push("tool_fail");
   const method = rec.method || "one";
   const values = rec.values || [];
   const crossValues = rec.cross || [];
-  if (rules && method === "three" && values.length === 3) {
-    const longBound = isBoundary(values, rules.slope.bound_long);
-    if (longBound && !flags.includes("boundary")) flags.push("boundary");
-  }
+  if (rules && method === "three" && values.length === 3 && isBoundary(values, rules.slope.bound_long)) flags.push("boundary");
   return {
     ...rec, flags, method, values, cross: crossValues, crossValues, first,
     long: longRoute(values, method), crossValue: crossRoute(crossValues, crossValues.length === 2 ? "both" : method),

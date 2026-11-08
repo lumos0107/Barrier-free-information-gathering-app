@@ -88,22 +88,26 @@ class App:
         time.sleep(0.8)
         self.close()
 
+    # 누르기는 실제 터치로 한다. 마우스 클릭으로는 손가락에서만 생기는 유령 누름을 못 잡는다.
+    def tap(self, sel, timeout=8000):
+        self.page.locator(sel).first.tap(timeout=timeout)
+
     def t(self, name, timeout=8000):
-        return self.page.locator(f'[data-t="{name}"]').first.click(timeout=timeout)
+        return self.tap(f'[data-t="{name}"]', timeout)
 
     def opt(self, value):
-        self.page.locator(f'[data-opt="{value}"]').first.click(timeout=8000)
+        self.tap(f'[data-opt="{value}"]')
 
     def keys(self, s):
         for ch in s:
-            self.page.locator(f'[data-k="{ch}"]').first.click(timeout=8000)
+            self.tap(f'[data-k="{ch}"]')
 
     def num(self, s):
         self.keys(s)
-        self.page.locator('[data-k="ok"]').first.click(timeout=8000)
+        self.tap('[data-k="ok"]')
 
     def sign(self, plus=True):
-        self.page.locator(f'[data-sign="{"plus" if plus else "minus"}"]').first.click(timeout=8000)
+        self.tap(f'[data-sign="{"plus" if plus else "minus"}"]')
 
     def state(self):
         return self.page.evaluate("window.__bf.state()")
@@ -144,15 +148,22 @@ class App:
             time.sleep(0.05)
         raise AssertionError(f"상태가 기대와 다름: {json.dumps(s, ensure_ascii=False)[:600]}")
 
+    def see(self, sel, timeout=8000):
+        try:
+            self.page.locator(sel).first.wait_for(timeout=timeout)
+        except Exception:
+            raise AssertionError(f"{sel} 없음. 화면: {self.text()[:300]}")
+
     def wait_saved(self, n):
         self.poll(f"window.__bf.events().length >= {n}")
 
     # 흐름 도우미 -----------------------------------------------------------
-    def load_pack(self):
-        self.page.locator('input[data-t="pack-file"]').set_input_files(str(PACK))
+    def load_pack(self, path=None):
+        self.see('input[data-t="pack-file"]', timeout=15000)
+        self.page.locator('input[data-t="pack-file"]').first.set_input_files(str(path or PACK))
 
-    def setup_day(self):
-        self.load_pack()
+    def setup_day(self, pack=None):
+        self.load_pack(pack)
         self.t("login-skip")
         self.opt("sunny")
         self.page.locator('[data-t="text"]').fill("가")
@@ -271,6 +282,7 @@ def test_full_flow(p, url):
     a.page.locator('[data-tool="end"]').click()
     a.num("160")
     a.opt("ok")
+    a.opt("checked")
     a.t("close-run")
     a.wait_text("3순위")
     s = a.state()
@@ -290,6 +302,7 @@ def test_route_choice_and_more_marks(p, url):
     a.page.locator('[data-tool="end"]').click()
     a.num("160")
     a.opt("ok")
+    a.opt("checked")
     a.t("close-run")
     # 1순위 뒤 3순위 고르기 화면
     a.wait_text("3순위")
@@ -506,9 +519,10 @@ def test_offline_after_first_load(p, url):
     a = App(p, url)
     a.poll("navigator.serviceWorker.controller !== null")
     a.setup_day()
+    a.see('[data-t="arrive"]')
     a.ctx.set_offline(True)
     a.page.reload()
-    a.page.wait_for_selector('[data-t="arrive"]', timeout=8000)
+    a.see('[data-t="arrive"]')
     a.start_run()
     a.point("11")
     a.save_point()
@@ -570,6 +584,7 @@ def test_skip_and_redo(p, url):
     a.page.locator('[data-tool="end"]').click()
     a.num("100")
     a.opt("ok")
+    a.opt("checked")
     a.wait_text("길이")
     a.t("close-redo")
     s = a.wait_state(lambda s: s["segStatus"]["0"] == "redo")
@@ -667,9 +682,7 @@ def test_double_tap_save(p, url):
     a.start_run()
     a.point("11")
     n = a.slope_count()
-    a.page.evaluate("""() => { const b = document.querySelector('[data-k="save"]');
-      const e = () => new PointerEvent('pointerdown', {bubbles: true});
-      b.dispatchEvent(e()); b.dispatchEvent(e()); }""")
+    a.page.evaluate("""() => { const b = document.querySelector('[data-k="save"]'); b.click(); b.click(); }""")
     time.sleep(0.5)
     assert a.slope_count() == n + 1, a.slope_count()
     ids = [e["id"] for e in a.events()]
@@ -727,6 +740,7 @@ def test_point_note_and_memo(p, url):
     a.page.locator('[data-tool="end"]').click()
     a.num("160")
     a.opt("ok")
+    a.opt("checked")
     a.t("edit-memo")
     a.page.locator('[data-t="text"]').fill("옆 갈래와 평행")
     a.t("next")
@@ -766,6 +780,7 @@ def test_two_lines(p, url):
     a.page.locator('[data-tool="end"]').click()
     a.num("160")
     a.opt("ok")
+    a.opt("checked")
     a.t("close-run")
     # 1순위에서 줄을 골랐으면 다른 줄을 이어서 잰다
     a.wait_text("다른 줄")
@@ -773,6 +788,736 @@ def test_two_lines(p, url):
     s = a.wait_state(lambda s: s["openRun"])
     r = s["runs"][s["openRun"]]
     assert r["line"] == "walk" and r["retry"] == "line" and r["from"] == 12, r
+    a.close()
+    return a
+
+
+# 1단계 고침 시험 -------------------------------------------------------------
+def test_touch_end_asks_result(p, url):
+    """끝값 뒤 '다음'을 손가락으로 눌러도 구간 확인을 묻는다(유령 누름 없음)."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.tap('[data-tool="end"]')
+    a.num("300")
+    time.sleep(0.3)
+    assert a.page.locator('[data-opt="ok"]').count() == 1, "구간 확인을 묻지 않음: " + a.text()[:200]
+    assert a.page.locator('[data-t="edit-result"]').count() == 0, "구간 확인이 저절로 들어감"
+    a.close()
+    return a
+
+
+def test_touch_bump_asks_dir(p, url):
+    """턱 높이 뒤 '다음'을 손가락으로 눌러도 방향을 묻는다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.tap('[data-tool="bump"]')
+    a.num("50")
+    a.num("25")
+    time.sleep(0.3)
+    assert a.page.locator('[data-opt="up"]').count() == 1 and a.page.locator('[data-opt="down"]').count() == 1, "방향을 묻지 않음: " + a.text()[:200]
+    a.close()
+    return a
+
+
+def test_draft_not_overwritten_after_crash(p, url):
+    """저장 직후 앱이 죽어 옛 초안이 복구돼도 저장한 값을 덮어쓰지 않는다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.point("11")
+    time.sleep(0.4)
+    # 저장 뒤 화면 상태 쓰기가 디스크에 닿지 못한 것을 흉내 낸다: 'ui' 쓰기를 버린다
+    a.page.evaluate("""() => { const o = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (v, k) { if (k === 'ui') return o.call(this, v, 'ui_dropped'); return o.apply(this, arguments); }; }""")
+    a.save_point()
+    first = [e for e in a.events() if e["kind"] == "slope"][0]
+    a.page.reload()
+    a.page.wait_for_selector("#app > *")
+    a.page.locator('[data-k="save"]').first.wait_for(timeout=8000)
+    d = a.page.evaluate("window.__bf.draft()")
+    assert d["id"] != first["id"], "저장한 번호의 초안이 그대로 복구됨"
+    a.fill_point("22")
+    a.save_point()
+    a.page.reload()
+    a.page.wait_for_selector("#app > *")
+    slopes = [e for e in a.events() if e["kind"] == "slope"]
+    assert len(slopes) == 2, len(slopes)
+    kept = [e for e in slopes if e["id"] == first["id"]][0]
+    assert kept["data"]["values"] == first["data"]["values"], kept["data"]
+    a.close()
+    return a
+
+
+def test_same_id_write_refused(p, url):
+    """같은 번호의 사건은 저장소가 받지 않는다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.point("11")
+    a.save_point()
+    ev = [e for e in a.events() if e["kind"] == "slope"][0]
+    r = a.page.evaluate("""async (id) => { const m = await import('./js/store.js'); await m.openStore();
+      try { await m.addEvent((seq) => ({ id, seq, kind: 'slope', at: new Date().toISOString(), data: { values: [9.9] } })); return 'ok'; }
+      catch (e) { return e.name || String(e); } }""", ev["id"])
+    assert r != "ok", r
+    a.close()
+    return a
+
+
+def test_triple_start_one_run(p, url):
+    """시작을 빠르게 3번 눌러도 구간 측정은 하나다."""
+    a = App(p, url)
+    a.setup_day()
+    a.t("arrive")
+    a.page.evaluate("""() => { const b = document.querySelector('[data-t="start-zero"]'); b.click(); b.click(); b.click(); }""")
+    time.sleep(0.5)
+    n = sum(1 for e in a.events() if e["kind"] == "run_start")
+    assert n == 1, n
+    a.close()
+    return a
+
+
+def test_clock_back_keeps_order(p, url):
+    """재는 중에 폰 시계가 5분 뒤로 가도 지점이 구간에 붙고 구간이 닫힌다."""
+    from datetime import datetime, timedelta
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.wait_state(lambda s: s["openRun"])
+    time.sleep(0.2)
+    a.page.clock.set_fixed_time(datetime.now() - timedelta(minutes=5))
+    a.point("11")
+    a.save_point()
+    evs = a.events()
+    start = [e for e in evs if e["kind"] == "run_start"][0]
+    slope = [e for e in evs if e["kind"] == "slope"][0]
+    assert slope["at"] < start["at"], "시계가 뒤로 가지 않음"
+    a.first_flow()
+    a.tap('[data-tool="end"]')
+    a.num("160")
+    a.opt("ok")
+    a.fill_form()
+    a.t("close-run")
+    s = a.wait_state(lambda s: not s["openRun"] and len(s["runOrder"]) == 1)
+    run = s["runs"][s["runOrder"][0]]
+    assert run["closed"] and len(run["points"]) == 1 and not s["loose"], (run["closed"], len(run["points"]), s["loose"])
+    a.close()
+    return a
+
+
+# 2단계 고침 시험 -------------------------------------------------------------
+def to_seg0(a):
+    """1순위 구간 1을 건너뛰고 30 m 구간 0을 시작한다. 예정 지점은 5, 15, 25."""
+    a.t("skip")
+    a.page.locator('[data-t="arrive"]').first.wait_for(timeout=8000)
+    a.start_run()
+    a.page.locator('[data-t="next-mark"]').first.wait_for(timeout=8000)
+
+
+def no_long_point(a):
+    """앞뒤를 '못 잼'으로 두고 좌우만 잰다."""
+    a.t("skip-slot")
+    a.keys("10")
+    a.save_point()
+
+
+def end_ok(a, end="300"):
+    a.tap('[data-tool="end"]')
+    a.num(end)
+    a.opt("ok")
+    a.fill_form()
+
+
+def test_unread_counts_missing(p, url):
+    """앞뒤를 모두 못 잼, 대표 폭도 못 잼으로 닫으면 못 잰 항목에 들어가고 구간이 '일부'다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    no_long_point(a)
+    a.t("blank")  # 대표 폭 못 잼
+    a.opt("block"); a.opt("good"); a.opt(""); a.t("form-save")
+    a.page.locator('[data-t="next-mark"]').first.wait_for(timeout=8000)
+    no_long_point(a)
+    no_long_point(a)
+    end_ok(a)
+    a.t("close-run")
+    s = a.wait_state(lambda s: not s["openRun"] and s["runOrder"])
+    run = s["runs"][s["runOrder"][0]]
+    assert "slope" in run["missing"] and "width" in run["missing"], run["missing"]
+    assert s["segStatus"]["0"] == "partial", s["segStatus"]
+    a.close()
+    return a
+
+
+def test_break_then_facility_position(p, url):
+    """끊김 뒤 시설의 자동 표시값은 끊김 뒤 값이고, 기록에 그때의 끊김 수가 남는다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    a.t("more")
+    a.t("break")
+    a.num("200")
+    a.num("0")
+    a.t("form-save")
+    a.tap('[data-fac="bench"]')
+    a.opt("no")
+    a.t("form-save")
+    a.page.locator('[data-t="next-mark"]').first.wait_for(timeout=8000)
+    f = [e for e in a.events() if e["kind"] == "facility"][0]
+    assert f["data"]["mark"] == 0 and f["data"]["breakCount"] == 1, f["data"]
+    a.close()
+    return a
+
+
+def test_first_surface_from_start(p, url):
+    """구간의 첫 노면은 구간 시작부터다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    a.poll("window.__bf.events().some(e => e.kind === 'surface')")
+    sf = [e for e in a.events() if e["kind"] == "surface"][0]
+    assert sf["data"]["mark"] == 0, sf["data"]
+    a.close()
+    return a
+
+
+def test_add_here_point(p, url):
+    """'여기 더 재기'로 넣은 지점은 더한 지점으로 남고 예정 지점은 그대로다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    a.t("add-here")
+    a.num("80")
+    a.fill_point("12")
+    a.save_point()
+    e = [e for e in a.events() if e["kind"] == "slope"][-1]
+    assert e["data"]["kind"] == "more" and e["data"]["added"] and e["data"]["mark"] == 8.0, e["data"]
+    d = a.page.evaluate("window.__bf.draft()")
+    assert d["mark"] == 15 and d["kind"] == "gap", (d["mark"], d["kind"])
+    a.close()
+    return a
+
+
+def test_planned_mark_not_lost(p, url):
+    """1순위 구간에서 4를 4.4로 재도 5 m 지점이 다음 차례로 남는다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.page.locator('[data-t="next-mark"]').first.wait_for(timeout=8000)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    a.page.locator('[data-t="next-mark"]').first.wait_for(timeout=8000)
+    a.tap('[data-adj="0.2"]')
+    a.tap('[data-adj="0.2"]')
+    a.fill_point("11")
+    a.save_point()
+    d = a.page.evaluate("window.__bf.draft()")
+    assert d["mark"] == 5 and d["both"], (d["mark"], d["both"])
+    a.close()
+    return a
+
+
+def test_edit_clears_hidden(p, url):
+    """턱 20 mm(둘째 값 19)를 10 mm로 고치면 숨은 칸이 남지 않는다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    a.tap('[data-tool="bump"]')
+    a.num("30")
+    a.num("20")
+    a.num("19")
+    a.opt("up")
+    a.opt("square")
+    a.num("12")
+    a.t("form-save")
+    a.page.locator('[data-t="next-mark"]').first.wait_for(timeout=8000)
+    bid = [e for e in a.events() if e["kind"] == "barrier"][0]["id"]
+    a.t("more")
+    a.t("records")
+    a.tap(f'[data-rec="{bid}"]')
+    a.t("edit-value")
+    a.num("10")
+    a.t("form-save")
+    s = a.wait_state(lambda s: s["runs"][s["runOrder"][0]]["barriers"][0]["value"] == 10)
+    b = s["runs"][s["runOrder"][0]]["barriers"][0]
+    assert "value2" not in b and "remain_cm" not in b, b
+    a.close()
+    return a
+
+
+def test_void_needs_two_taps(p, url):
+    """지점 지우기는 두 번 눌러야 지워진다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    a.t("last")
+    a.t("void-record")
+    time.sleep(0.2)
+    assert not any(e["kind"] == "void" for e in a.events()), "한 번에 지워짐"
+    a.t("void-record")
+    a.wait_state(lambda s: len(s["runs"][s["runOrder"][0]]["points"]) == 0)
+    a.close()
+    return a
+
+
+def test_run_header_fix(p, url):
+    """닫은 구간의 끝값을 기록 목록에서 고칠 수 있다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    end_ok(a, "513")
+    a.t("close-run")
+    s = a.wait_state(lambda s: not s["openRun"] and s["runOrder"])
+    rid = s["runOrder"][0]
+    a.t("more")
+    a.t("records")
+    a.tap(f'[data-run="{rid}"]')
+    a.t("edit-end")
+    a.num("153")
+    a.t("form-save")
+    a.wait_state(lambda s: s["runs"][rid]["end"] == 15.3)
+    a.close()
+    return a
+
+
+def test_photo_count_by_record(p, url):
+    """구간 끝의 사진 셈에 시설 사진이 섞이지 않는다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    a.t("more")
+    a.tap('[data-fac="ramp"]')
+    a.fill_form()
+    a.t("photo")
+    a.t("photo")
+    a.t("form-save")
+    a.page.locator('[data-t="next-mark"]').first.wait_for(timeout=8000)
+    end_ok(a)
+    tx = a.text()
+    assert "찍음 0장" in tx, tx[:400]
+    a.close()
+    return a
+
+
+def test_keypad_stays_put(p, url):
+    """띠가 떠도 숫자 키 자리가 그대로다."""
+    a = App(p, url, width=384, height=780)
+    a.setup_day()
+    to_seg0(a)
+    before = a.page.locator('[data-k="5"]').bounding_box()
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    a.page.locator('[data-t="next-mark"]').first.wait_for(timeout=8000)
+    after = a.page.locator('[data-k="5"]').bounding_box()
+    assert abs(before["y"] - after["y"]) < 1, (before, after)
+    save = a.page.locator('[data-k="save"]').bounding_box()
+    assert save["y"] + save["height"] <= 780, save
+    a.close()
+    return a
+
+
+# 3단계 고침 시험 -------------------------------------------------------------
+def custom_pack(name, change):
+    body = fake_pack.build(HERE.parent / "tools" / "rules.json")
+    change(body)
+    path = TMP / name
+    path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def day_form(a):
+    a.opt("sunny")
+    a.page.locator('[data-t="text"]').fill("가")
+    a.t("next")
+    a.page.locator('[data-t="text"]').fill("나")
+    a.t("next")
+    a.t("form-save")
+
+
+def close_seg(a, end="160"):
+    a.tap('[data-tool="end"]')
+    a.num(end)
+    a.opt("ok")
+    a.fill_form()
+    a.t("close-run")
+
+
+def test_gps_waits_for_tap(p, url):
+    """위치는 '위치 켜기'를 누를 때 처음 묻는다. 권한 창이 막히지 않게 한다."""
+    d = tempfile.mkdtemp(prefix="bfprofile-", dir=TMP)
+    ctx = p.chromium.launch_persistent_context(d, channel="msedge", headless=True, viewport={"width": 412, "height": 880}, has_touch=True)
+    ctx.add_init_script("""window.__geoCalls = 0; const g = navigator.geolocation;
+      const w = g.watchPosition.bind(g); g.watchPosition = (...a) => { window.__geoCalls += 1; return w(...a); };""")
+    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+    page.goto(url)
+    page.wait_for_selector("#app > *")
+    page.locator('input[data-t="pack-file"]').set_input_files(str(PACK))
+    page.locator('[data-t="login-skip"]').tap()
+    page.locator('[data-opt="sunny"]').tap()
+    page.locator('[data-t="text"]').fill("가")
+    page.locator('[data-t="next"]').tap()
+    page.locator('[data-t="text"]').fill("나")
+    page.locator('[data-t="next"]').tap()
+    page.locator('[data-t="form-save"]').tap()
+    page.locator('[data-t="gps-on"]').wait_for(timeout=8000)
+    assert page.evaluate("window.__geoCalls") == 0, "누르기 전에 위치를 물음"
+    page.locator('[data-t="gps-on"]').tap()
+    time.sleep(0.3)
+    assert page.evaluate("window.__geoCalls") == 1
+    ctx.close()
+    return None
+
+
+def test_switch_pack_keeps_records(p, url):
+    """다른 대상지 자료를 넣으면 앞 대상지 기록은 그대로 남고, 다시 넣으면 이어진다."""
+    other = custom_pack("other_site.json", lambda b: b.update(site="fake2", name="둘째 대상지", net="othernet0000"))
+    a = App(p, url)
+    a.setup_day()
+    a.see('[data-t="arrive"]')
+    n = len(a.events())
+    assert n > 0
+    a.t("more")
+    a.page.locator('input[data-t="pack-file"]').set_input_files(str(other))
+    a.page.locator('[data-t="login-skip"]').wait_for(timeout=8000)
+    assert len(a.events()) == 0, "새 대상지에 앞 기록이 섞임"
+    a.t("login-skip")
+    day_form(a)
+    a.t("phone-ok")
+    a.tool_check()
+    a.t("more")
+    a.page.locator('input[data-t="pack-file"]').set_input_files(str(PACK))
+    a.page.locator('[data-t="login-skip"]').wait_for(timeout=8000)
+    assert len(a.events()) == n, (len(a.events()), n)
+    a.close()
+    return a
+
+
+def test_token_refused_shows_login(p, url):
+    """토큰 갱신이 거절되면 세션을 지우고 다시 로그인할 수 있다."""
+    pk = TMP / "fake_db_pack2.json"
+    pk.write_text(json.dumps(fake_pack.build(HERE.parent / "tools" / "rules.json", db=FAKE_DB), ensure_ascii=False), encoding="utf-8")
+    a = App(p, url)
+
+    def handler(route, request):
+        u = request.url
+        if "grant_type=password" in u:
+            return route.fulfill(status=200, json={"access_token": "a", "refresh_token": "r", "expires_in": -10})
+        if "grant_type=refresh_token" in u:
+            return route.fulfill(status=400, json={"error": "invalid_grant"})
+        return route.fulfill(status=401, body="{}")
+
+    a.ctx.route("https://fake-project.supabase.co/**", handler)
+    a.load_pack(pk)
+    a.page.locator('[data-t="email"]').fill("x@test.invalid")
+    a.page.locator('[data-t="password"]').fill("y")
+    a.t("login")
+    day_form(a)
+    a.t("phone-ok")
+    a.tool_check()
+    a.t("more")
+    if a.page.locator('[data-t="sync-now"]').count():
+        a.t("sync-now")
+    a.page.locator('[data-t="go-login"]').wait_for(timeout=8000)
+    a.errors = [e for e in a.errors if "400" not in e and "401" not in e]
+    a.close()
+    return a
+
+
+def test_spare_phone_restore_from_day(p, url):
+    """자료를 넣어 둔 예비 폰은 오늘 준비 화면에서 백업을 복원한다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.page.locator('[data-t="next-mark"]').first.wait_for(timeout=8000)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    a.t("more")
+    with a.page.expect_download() as dl:
+        a.t("backup-file")
+    path = TMP / "spare.txt"
+    dl.value.save_as(path)
+    n = len(a.events())
+    a.close()
+    b = App(p, url)
+    b.load_pack()
+    b.t("login-skip")
+    b.page.locator('input[data-t="restore-file"]').set_input_files(str(path))
+    b.poll(f"window.__bf.events().length === {n}")
+    b.see('[data-t="next-mark"]')
+    b.close()
+    a.errors += b.errors
+    return a
+
+
+def test_reload_on_phone_setup(p, url):
+    """폰 설정 화면에서 앱이 다시 열려도 아침 점검으로 돌아온다."""
+    a = App(p, url)
+    a.load_pack()
+    a.t("login-skip")
+    day_form(a)
+    a.see('[data-t="phone-ok"]')
+    a.page.reload()
+    a.page.wait_for_selector("#app > *")
+    a.see('[data-t="phone-ok"]')
+    a.t("phone-ok")
+    a.see('[data-sign="plus"]')
+    a.page.reload()
+    a.page.wait_for_selector("#app > *")
+    a.see('[data-sign="plus"]')
+    a.tool_check()
+    a.see('[data-t="arrive"]')
+    a.close()
+    return a
+
+
+def test_redo_close_moves_on(p, url):
+    """다시 잴 목록에 넣고 닫으면 다음 구간으로 간다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.tap('[data-tool="end"]')
+    a.num("400")
+    a.opt("ok")
+    a.fill_form()
+    a.t("close-redo")
+    a.wait_state(lambda s: s["segStatus"]["1"] == "redo")
+    a.wait_text("다음 일: 구간 0")
+    a.close()
+    return a
+
+
+def test_skip_p1_asks_route(p, url):
+    """1순위를 건너뛰고 2순위를 다 하면 3순위 길을 묻는다. 고르기 전에는 3순위로 가지 않는다."""
+    a = App(p, url)
+    a.setup_day()
+    for seg in ("1", "0", "2", "3"):
+        a.wait_text(f"다음 일: 구간 {seg}")
+        a.t("skip")
+    a.wait_text("3순위 길 고르기")
+    a.t("route-10")
+    a.opt("site")
+    a.wait_text("다음 일: 구간 5")
+    a.t("more")
+    a.t("route-again")
+    a.wait_text("3순위 길 고르기")
+    a.close()
+    return a
+
+
+def test_new_path_moves_run(p, url):
+    """재는 중에 '새 길'을 누르면 지금 구간을 어떻게 할지 묻고, 잰 지점을 새 길로 옮길 수 있다."""
+    a = App(p, url)
+    a.setup_day()
+    a.t("skip")
+    a.start_run()
+    a.page.locator('[data-t="next-mark"]').first.wait_for(timeout=8000)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    a.t("more")
+    a.t("new-path-more")
+    a.t("np-move")
+    box = a.page.locator('[data-t="map"]').bounding_box()
+    a.page.touchscreen.tap(box["x"] + 60, box["y"] + 60)
+    time.sleep(0.2)
+    a.page.touchscreen.tap(box["x"] + 160, box["y"] + 90)
+    time.sleep(0.2)
+    a.t("draw-done")
+    s = a.wait_state(lambda s: s["openRun"] and isinstance(s["runs"][s["openRun"]]["seg"], str))
+    run = s["runs"][s["openRun"]]
+    assert len(run["points"]) == 1, len(run["points"])
+    assert "-" in run["seg"], run["seg"]
+    old = [s["runs"][x] for x in s["runOrder"] if x != s["openRun"]]
+    assert len(old) == 1 and old[0]["seg"] == 0 and old[0]["result"] == "not_path" and not old[0]["points"], old
+    a.close()
+    return a
+
+
+def test_boot_failure_screen(p, url):
+    """시작 중 오류가 나면 '불러오는 중'에 멈추지 않고 이유와 다시 열기가 보인다."""
+    a = App(p, url)
+    a.setup_day()
+    a.ctx.add_init_script("IDBObjectStore.prototype.getAll = function () { throw new Error('시험용 읽기 실패'); };")
+    a.page.reload()
+    a.page.locator('[data-t="boot-fail"]').wait_for(timeout=8000)
+    assert "시험용 읽기 실패" in a.text()
+    a.errors.clear()
+    a.close()
+    return a
+
+
+def test_twin_question(p, url):
+    """순서에 없는 옆 선이 붙은 구간을 닫을 때 옆 선이 실제 길인지 묻는다."""
+    pk = custom_pack("twin.json", lambda b: b["segs"][0].update(twin=[6]))
+    a = App(p, url)
+    a.setup_day(pk)
+    a.t("skip")
+    a.start_run()
+    a.tap('[data-tool="end"]')
+    a.num("300")
+    a.opt("ok")
+    a.opt("checked")
+    a.wait_text("옆 선 구간 6")
+    a.opt("no")
+    a.fill_form()
+    a.t("close-run")
+    a.poll("window.__bf.events().some(e => e.kind === 'run_end')")
+    end = [e for e in a.events() if e["kind"] == "run_end"][0]
+    assert end["data"]["twin"] == {"seg": 6, "result": "no"}, end["data"]
+    a.close()
+    return a
+
+
+def test_new_day_restarts_prep(p, url):
+    """날짜가 바뀌면 오늘 준비부터 다시 한다."""
+    from datetime import datetime, timedelta
+    a = App(p, url)
+    a.setup_day()
+    a.page.locator('[data-t="arrive"]').wait_for(timeout=8000)
+    a.page.clock.set_fixed_time(datetime.now() + timedelta(days=1))
+    a.page.reload()
+    a.page.wait_for_selector("#app > *")
+    a.see('[data-opt="sunny"]')
+    a.close()
+    return a
+
+
+def test_end_asks_no_barrier(p, url):
+    """장벽을 하나도 안 적은 구간은 닫을 때 '장벽 없음 확인'을 남긴다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.tap('[data-tool="end"]')
+    a.num("160")
+    a.opt("ok")
+    a.opt("checked")
+    a.t("close-run")
+    a.poll("window.__bf.events().some(e => e.kind === 'run_end')")
+    end = [e for e in a.events() if e["kind"] == "run_end"][0]
+    assert end["data"]["no_barrier"] == "checked", end["data"]
+    a.close()
+    return a
+
+
+def test_restore_rejects_mixed(p, url):
+    """백업 안에 다른 연결망이나 시험 표시가 다른 사건이 있으면 그 사건은 넣지 않는다."""
+    a = App(p, url)
+    a.setup_day()
+    evs = a.events()
+    bad = dict(evs[-1])
+    bad["id"] = "bad-net-1"
+    bad["net"] = "other"
+    data = {"format": "bf-backup-1", "site": "fake", "net": "fakenet00000", "events": evs + [bad]}
+    path = TMP / "mixed.txt"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    a.t("more")
+    a.page.locator('input[data-t="restore-file"]').set_input_files(str(path))
+    a.wait_text("넣지 않음")
+    assert not any(e["id"] == "bad-net-1" for e in a.events())
+    a.close()
+    return a
+
+
+def test_merge_keeps_my_open_run(p, url):
+    """다른 폰 기록을 합쳐도 이 폰에서 재던 구간이 열린 구간으로 남는다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.page.locator('[data-t="next-mark"]').first.wait_for(timeout=8000)
+    mine = a.state()["openRun"]
+    evs = a.events()
+    t = evs[-1]["at"]
+    other = {**evs[-1], "id": "other-run", "dev": "otherdev", "seq": 1, "kind": "run_start", "ord": evs[-1].get("ord", 0) + 5, "at": t,
+             "data": {"seg": 0, "from": 10, "start": 0}}
+    data = {"format": "bf-backup-1", "site": "fake", "net": "fakenet00000", "events": [other]}
+    path = TMP / "merge.txt"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    a.t("more")
+    a.page.locator('input[data-t="restore-file"]').set_input_files(str(path))
+    s = a.wait_state(lambda s: "other-run" in s["runs"])
+    assert s["openRun"] == mine, (s["openRun"], mine)
+    a.close()
+    return a
+
+
+# 13번 나머지 -----------------------------------------------------------------
+def test_closed_run_change_seg_and_from(p, url):
+    """닫은 구간의 출발 마디와 구간 번호를 기록 목록에서 고칠 수 있다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    end_ok(a)
+    a.t("close-run")
+    s = a.wait_state(lambda s: not s["openRun"] and s["runOrder"])
+    rid = s["runOrder"][0]
+    a.t("more")
+    a.t("records")
+    a.tap(f'[data-run="{rid}"]')
+    a.t("edit-from")
+    a.opt("11")
+    a.t("form-save")
+    a.wait_state(lambda s: s["runs"][rid]["from"] == 11)
+    a.tap(f'[data-run="{rid}"]')
+    a.t("run-change-seg")
+    a.t("list-all")
+    a.tap('[data-seg="2"]')
+    a.tap('[data-from="13"]')
+    s = a.wait_state(lambda s: s["runs"][rid]["seg"] == 2)
+    assert s["runs"][rid]["from"] == 13 and s["runs"][rid]["closed"], s["runs"][rid]["from"]
+    assert "0" not in s["segStatus"] and s["segStatus"]["2"] in ("done", "partial"), s["segStatus"]
+    a.see(f'[data-run="{rid}"]')
+    a.close()
+    return a
+
+
+def test_void_break(p, url):
+    """잘못 넣은 끊김은 두 번 눌러 지운다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    a.t("more")
+    a.t("break")
+    a.num("200")
+    a.num("0")
+    a.t("form-save")
+    a.poll("window.__bf.events().some(e => e.kind === 'break')")
+    kid = [e for e in a.events() if e["kind"] == "break"][0]["id"]
+    a.t("records")
+    a.tap(f'[data-rec="{kid}"]')
+    a.t("void-record")
+    time.sleep(0.2)
+    assert not any(e["kind"] == "void" for e in a.events()), "한 번에 지워짐"
+    a.t("void-record")
+    a.wait_state(lambda s: s["openRun"] and len(s["runs"][s["openRun"]]["breaks"]) == 0)
     a.close()
     return a
 

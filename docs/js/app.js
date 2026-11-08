@@ -38,7 +38,11 @@ const nowIso = () => new Date().toISOString();
 const clock = (iso) => (iso ? new Date(iso).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }) : "-");
 const tap = () => { if (navigator.vibrate) navigator.vibrate(8); };
 
-const refold = () => { S.st = C.foldEvents(S.events, S.rules); };
+const refold = () => { S.st = C.foldEvents(S.events, S.rules, S.dev); };
+const today = () => new Date().toLocaleDateString("sv-SE");
+const dayOf = (iso) => new Date(iso).toLocaleDateString("sv-SE");
+// 오늘 출발 전 점검을 했는지. 다른 폰에서 복원한 기록도 센다.
+const checkedToday = (tool) => S.st.toolChecks.some((t) => t.tool === tool && t.when === "before" && dayOf(t.at) === today());
 const openRun = () => (S.st && S.st.openRun ? S.st.runs[S.st.openRun] : null);
 
 function segOf(id) {
@@ -52,13 +56,19 @@ const stopFor = (s, from) => (s.stop && s.stop.from === from ? s.stop.m : null);
 const fromLabel = (s, from) => (from === s.a ? "A" : "B");
 const distOf = (run, p) => C.continued(p.mark, run.start, run.breaks.slice(0, p.breakCount ?? run.breaks.length));
 const markOfDist = (run, dist) => round1(dist - C.continued(0, run.start, run.breaks));
-const lastMark = (run) => (run.points.length ? run.points[run.points.length - 1].mark : run.start);
+// 지금 표시값. 마지막 지점 뒤에 끊김이 있으면 그 끊김 뒤에 읽은 값이다.
+const lastMark = (run) => {
+  const pt = run.points[run.points.length - 1];
+  const nb = run.breaks.length;
+  if (nb && (!pt || (pt.breakCount ?? nb) < nb)) return run.breaks[nb - 1].now;
+  return pt ? pt.mark : run.start;
+};
 
 // 사건 쓰기. 디스크 기록이 끝난 뒤에만 돌아온다. 실패하면 화면 위에 붉은 띠를 고정한다.
 async function emit(kind, data, opt = {}) {
   try {
     const ev = await DB.addEvent((seq) => ({
-      id: opt.id || DB.uid(), seq, kind, run: opt.run || undefined, at: nowIso(), dev: S.dev, app: APP_VERSION,
+      id: opt.id || DB.uid(), seq, ord: C.nextOrd(Date.now(), S.st ? S.st.maxOrd : 0), kind, run: opt.run || undefined, at: nowIso(), dev: S.dev, app: APP_VERSION,
       site: S.pack.site, test: !!S.pack.test, net: S.pack.net, pack: S.pack.hash, rules: S.rules.version,
       by: S.st ? { m: S.st.people.measurer, r: S.st.people.recorder } : {}, gps: gpsStamp(), data,
     }));
@@ -70,11 +80,34 @@ async function emit(kind, data, opt = {}) {
     scheduleSync();
     return ev;
   } catch (e) {
+    if (e && e.name === "ConstraintError") {
+      // 이미 저장된 번호. 원값은 그대로 두고 쓰던 칸을 새로 연다.
+      S.draft = null;
+      S.form = null;
+      await reloadEvents();
+      S.notices = [{ text: "이 기록은 이미 저장돼 있습니다. 기록 목록에서 값을 확인하세요" }];
+      home();
+      throw e;
+    }
     S.storeError = `저장 실패: ${e.message || e}. 지금 값은 종이에 적어 두세요`;
     render();
     throw e;
   }
 }
+
+// 사건을 쓰는 버튼. 쓰는 동안 다른 쓰기 버튼을 받지 않는다(연타로 시작, 닫기, 찍음이 겹치지 않게).
+let acting = false;
+const act = (fn) => async (...args) => {
+  if (acting) return;
+  acting = true;
+  try {
+    await fn(...args);
+  } catch {
+    /* 붉은 띠나 알림으로 이미 알렸다 */
+  } finally {
+    acting = false;
+  }
+};
 
 function gpsStamp() {
   if (!S.gps) return null;
@@ -89,6 +122,7 @@ function go(screen, params = {}, { push = true } = {}) {
   S.params = params;
   S.focusDone = false;
   render();
+  flushUi();
 }
 
 function goBack() {
@@ -105,7 +139,11 @@ function home() {
   S.stack = [];
   S.form = null;
   if (!S.pack) return go("pack", {}, { push: false });
-  if (!S.st.day) return startDay();
+  // 날짜가 바뀌면 오늘 준비부터 다시 한다(이틀째 측정, 시험 뒤 실제 측정)
+  if (!S.st.day || S.st.day.date !== today()) return startDay();
+  // 폰 설정 화면에서 앱이 다시 열려도 아침 점검을 건너뛰지 않는다
+  if (!checkedToday("phone_setup")) return go("phone_setup", {}, { push: false });
+  if (!checkedToday("level")) return openForm("tool", null, { run: null, ctx: { when: "before" } });
   if (openRun()) return go("measure", {}, { push: false });
   if (routeNeeded()) return go("route", {}, { push: false });
   return go("move", {}, { push: false });
@@ -119,7 +157,8 @@ function persistUi() {
 function flushUi() {
   clearTimeout(uiTimer);
   if (!S.pack) return;
-  DB.setMeta("ui", { draft: S.draft, form: S.form, flow: S.flow, photoDue: S.photoDue }).catch(() => {});
+  const form = S.form ? { ...S.form, saving: undefined } : null;
+  DB.setMeta("ui", { draft: S.draft, form, flow: S.flow, photoDue: S.photoDue }).catch(() => {});
 }
 
 function render() {
@@ -147,8 +186,9 @@ function topBar() {
       else if (S.syncError) parts.push(h("span", { class: "warn" }, `전송 대기 ${S.pendingN}`));
       else parts.push(h("span", {}, S.pendingN ? `전송 대기 ${S.pendingN}` : "전송 끝"));
     }
-    if (S.gpsError) parts.push(h("span", { class: "warn" }, "위치 안 됨"));
-    else if (S.gps) parts.push(h("span", { class: S.gps.acc > S.rules.app.gps_acc_warn_m ? "warn" : "" }, `위치 ±${Math.round(S.gps.acc)} m`));
+    if (S.gps) parts.push(h("span", { class: S.gps.acc > S.rules.app.gps_acc_warn_m ? "warn" : "" }, `위치 ±${Math.round(S.gps.acc)} m`));
+    else if (watchId !== null && !S.gpsError) parts.push(h("span", {}, "위치 찾는 중"));
+    else parts.push(btn(S.gpsError ? "위치 안 됨: 다시 켜기" : "위치 켜기", () => startGps(true), { class: "warn", "data-t": "gps-retry" }));
     if (S.battery != null) parts.push(h("span", { class: S.battery <= S.rules.app.battery_warn ? "warn" : "" }, `전지 ${S.battery}%`));
     if (S.wake === "off") parts.push(h("span", { class: "warn" }, "화면 켜짐 안 됨"));
     const p = S.st && S.st.people;
@@ -180,7 +220,11 @@ async function usePack(stored) {
       S.image = null;
     }
   }
-  startGps();
+  // 위치는 사람이 누를 때 처음 묻는다. 터치 없이 물으면 창 없이 막히는 브라우저가 있다.
+  try {
+    const st = await navigator.permissions.query({ name: "geolocation" });
+    if (st.state === "granted") startGps();
+  } catch { /* 권한 조회가 없는 브라우저는 '위치 켜기'로 켠다 */ }
 }
 
 async function importPack(file) {
@@ -188,11 +232,21 @@ async function importPack(file) {
   try {
     const j = JSON.parse(await file.text());
     if (j.format !== 1 || !j.segs || !j.rules) throw new Error("자료 파일 형식이 아닙니다");
-    if (S.events.length && S.pack && (S.pack.net !== j.net || S.pack.site !== j.site)) {
-      throw new Error(`이미 ${S.pack.name} 기록이 있습니다. 연결망이 다른 자료는 넣을 수 없습니다`);
-    }
     const { aerial, ...rest } = j;
     const stored = { ...rest, aerialBlob: aerial ? b64ToBlob(aerial) : null };
+    const key = DB.siteKey(j);
+    if (S.pack && DB.siteKey(S.pack) !== key && S.events.length) {
+      // 다른 대상지나 연결망: 그 대상지의 저장소로 옮긴다. 지금 기록은 이 저장소에 그대로 남는다.
+      DB.claim(DB.siteKey(S.pack), DB.currentName());
+      const name = DB.nameFor(key);
+      await DB.switchTo(name);
+      await DB.putPack(stored);
+      DB.claim(key, name);
+      sessionStorage.setItem("bf-after-switch", `${S.pack.name} 기록은 이 폰에 그대로 있습니다. 그 자료를 다시 넣으면 이어집니다`);
+      location.reload();
+      return;
+    }
+    DB.claim(key, DB.currentName());
     await DB.putPack(stored);
     await usePack(stored);
     refold();
@@ -217,11 +271,13 @@ function restoreInput() {
 }
 
 function loginScreen() {
+  const switched = S.switchNote;
   const email = h("input", { type: "email", "data-t": "email", placeholder: "이메일", autocomplete: "username", value: S.loginEmail || "" });
   const password = h("input", { type: "password", "data-t": "password", placeholder: "비밀번호", autocomplete: "current-password" });
   const has = Sync.isConfigured();
   return h("div", { class: "screen" },
     h("h1", {}, "로그인"),
+    switched && h("div", { class: "info" }, `자료를 바꿨습니다: ${S.pack.name}. ${switched}`),
     has ? h("p", {}, "로그인하면 통신될 때 기록의 사본이 데이터베이스로 갑니다. 통신이 없어도 폰에는 저장됩니다.") : h("p", {}, "이 자료 파일에는 데이터베이스 정보가 없습니다. 폰에만 저장합니다."),
     has && email, has && password,
     S.msg && h("div", { class: "notice" }, S.msg),
@@ -249,9 +305,11 @@ async function restoreFile(file) {
     const j = JSON.parse(await file.text());
     if (j.format !== "bf-backup-1" || !Array.isArray(j.events)) throw new Error("백업 파일이 아닙니다");
     if (j.site !== S.pack.site || j.net !== S.pack.net) throw new Error("다른 연결망의 백업입니다. 같은 자료 파일을 넣은 뒤 복원하세요");
-    const r = await DB.importEvents(j.events);
+    const good = j.events.filter(sameSite);
+    const bad = j.events.length - good.length;
+    const r = await DB.importEvents(good);
     await reloadEvents();
-    setRecover(`복원 ${r.added}건, 이미 있던 ${r.skipped}건`);
+    setRecover(`복원 ${r.added}건, 이미 있던 ${r.skipped}건${bad ? `, 대상지나 시험 표시가 달라 넣지 않음 ${bad}건` : ""}`);
     S.notices = [];
     S.draft = null;
     home();
@@ -260,6 +318,9 @@ async function restoreFile(file) {
     render();
   }
 }
+
+// 이 자료와 같은 대상지, 연결망, 시험 표시의 사건만 받는다
+const sameSite = (e) => !!e && e.site === S.pack.site && e.net === S.pack.net && !!e.test === !!S.pack.test;
 
 async function reloadEvents() {
   S.events = await DB.allEvents();
@@ -333,6 +394,32 @@ const END_FORM = {
   photos: () => 0,
 };
 
+// 구간 끝 질문. 장벽을 하나도 안 적었으면 '찾아봤고 없음'을 남기고, 순서에 없는 옆 선이 있으면 실제 길인지 묻는다.
+function endDef(form) {
+  const ctx = form.ctx;
+  const walking = (a) => a.result === "ok" || a.result === "stopped";
+  const [endStep, resultStep, reasonStep, memoStep] = END_FORM.steps;
+  const steps = [endStep, resultStep, reasonStep,
+    { key: "no_barrier", label: "턱, 틈, 좁은 곳을 찾아봤나요 (적은 장벽 없음)", type: "choice", options: [["checked", "찾아봤고 없음"], ["not_looked", "못 봄"]], showIf: (a) => ctx.noBarrierAsk && walking(a) }];
+  if (ctx.twin != null) steps.push({ key: "twin", label: `옆 선 구간 ${ctx.twin}이 실제 길인가요`, type: "choice", options: [["yes", "있음"], ["no", "없음"], ["unknown", "모름"]], showIf: walking });
+  steps.push(memoStep);
+  return { ...END_FORM, steps };
+}
+
+function runFixDef(form) {
+  const steps = [{ key: "start", label: "시작값", type: "mark", unit: "m", decimals: 1 }];
+  if (form.ctx.closed) steps.push({ key: "end", label: "끝값", type: "mark", unit: "m", decimals: 1 }, { key: "result", label: "구간 확인", type: "choice", options: F.RESULTS });
+  const seg = segOf(form.ctx.seg);
+  if (seg) steps.push({ key: "from", label: "출발 마디", type: "choice", options: [[seg.a, "A에서 출발"], [seg.b, "B에서 출발"]] });
+  return { label: `구간 ${form.ctx.seg} 고치기`, steps, photos: () => 0 };
+}
+
+function openRunFix(r) {
+  const initial = { start: r.start, from: r.from };
+  if (r.closed) Object.assign(initial, { end: r.end, result: r.result });
+  openForm("run_fix", null, { run: r.id, initial, ctx: { seg: r.seg, closed: r.closed } });
+}
+
 function slopeEditDef(form) {
   const steps = [{ key: "mark", label: "표시값", type: "mark", unit: "m", decimals: 1 }];
   for (let i = 0; i < (form.ctx.longs || 0); i += 1) steps.push({ key: `long-${i}`, label: `앞뒤 ${i + 1}`, type: "signed", unit: "°", decimals: 1 });
@@ -343,7 +430,13 @@ function slopeEditDef(form) {
 function defOf(form) {
   switch (form.kind) {
     case "barrier": return F.BARRIERS[form.type];
-    case "surface": return form.answers.changed ? { ...F.SURFACE, steps: F.SURFACE.steps.map((s) => (s.key === "mark" ? { ...s, auto: undefined } : s)) } : F.SURFACE;
+    case "surface": {
+      if (form.answers.changed) return { ...F.SURFACE, steps: F.SURFACE.steps.map((s) => (s.key === "mark" ? { ...s, auto: undefined } : s)) };
+      // 구간의 첫 노면은 구간 시작부터다
+      const run = form.run && S.st.runs[form.run];
+      if (run && !run.surfaces.length && !form.fixOf) return { ...F.SURFACE, steps: F.SURFACE.steps.map((s) => (s.key === "mark" ? { ...s, auto: "start" } : s)) };
+      return F.SURFACE;
+    }
     case "facility": return F.FACILITIES[form.type];
     case "map_check": return F.MAP_CHECK;
     case "break": return F.BREAK_FORM;
@@ -353,9 +446,10 @@ function defOf(form) {
     case "level_retry": return LEVEL_RETRY_FORM;
     case "angle": return ANGLE_FORM;
     case "start_value": return START_FORM;
-    case "run_end": return END_FORM;
+    case "run_end": return endDef(form);
     case "point_note": return F.POINT_NOTE;
     case "slope_edit": return slopeEditDef(form);
+    case "run_fix": return runFixDef(form);
     default: return null;
   }
 }
@@ -372,12 +466,14 @@ function stepsOf(form) {
 }
 
 function autoValue(step, form) {
-  if (step.auto === "current") {
-    const run = form.run && S.st.runs[form.run];
-    return run ? lastMark(run) : null;
-  }
+  const run = form.run && S.st.runs[form.run];
+  if (step.auto === "current") return run ? lastMark(run) : null;
+  if (step.auto === "start") return run ? run.start : null;
   return step.auto;
 }
+
+// '못 잼'으로 비운 칸. 구간을 닫을 때 못 잰 항목으로 센다.
+const unreadOf = (form) => stepsOf(form).filter((st) => st.blank === F.UNREADABLE && Object.hasOwn(form.answers, st.key) && form.answers[st.key] == null).map((st) => st.key);
 
 function currentStep(form) {
   for (const s of stepsOf(form)) {
@@ -440,6 +536,7 @@ function formScreen() {
   return h("div", { class: "screen fill" },
     h("div", { class: "spread" }, h("h1", {}, def.label), form.kind !== "day" && btn("취소", cancelForm, { class: "mini", "data-t": "form-cancel" })),
     form.kind === "day" && S.user && !S.events.length && btn("다른 폰 기록을 데이터베이스에서 받기", pullDb, { class: "mini", "data-t": "pull-db" }),
+    form.kind === "day" && h("div", { class: "info" }, h("div", {}, "예비 폰으로 이어 쓰려면 백업 파일을 고르세요"), restoreInput()),
     list,
     S.msg && h("div", { class: "notice" }, S.msg),
     step ? stepPanel(form, step) : summaryPanel(form, def));
@@ -507,19 +604,30 @@ function summaryPanel(form, def) {
   if (form.kind === "run_end") return endReview(form);
   const need = def.photos ? def.photos(form.answers, S.rules) : 0;
   const got = photoCountFor(form.id);
+  const armed = !!form.ctx.voidArm;
   return h("div", { class: "panel" },
-    (need > 0 || form.kind === "barrier" || form.kind === "surface" || form.kind === "facility" || form.kind === "map_check") &&
-      btn(`사진 찍음 ${got}/${need}`, async () => { tap(); await emit("photo", { of: form.id }, { run: form.run }); render(); }, { class: got < need ? "warn" : "", "data-t": "photo" }),
-    form.fixOf && form.kind === "slope_edit" && btn("이 지점 지우기", async () => {
+    form.kind === "run_fix" && btn("구간 번호 바꾸기", () => openMap("change", form.run), { class: "mini", "data-t": "run-change-seg" }),
+    form.fixOf && (form.kind === "slope_edit" || form.kind === "break") && btn(armed ? "한 번 더 누르면 지웁니다" : form.kind === "break" ? "이 끊김 지우기" : "이 지점 지우기", act(async () => {
+      if (!armed) {
+        form.ctx.voidArm = true;
+        render();
+        setTimeout(() => { if (S.form === form && form.ctx.voidArm) { form.ctx.voidArm = false; render(); } }, 4000);
+        return;
+      }
       await emit("void", { of: form.fixOf }, { run: form.run });
       S.draft = null;
       S.form = null;
       home();
-    }, { class: "mini", "data-t": "void-record" }),
+    }), { class: armed ? "warn" : "mini", "data-t": "void-record" }),
+    form.fixOf && h("p", { class: "small" }, "고칠 칸은 위 목록에서 누르세요"),
+    need > 0 && def.shot && h("p", { class: "small" }, `사진: ${def.shot}`),
+    (need > 0 || form.kind === "barrier" || form.kind === "surface" || form.kind === "facility" || form.kind === "map_check") &&
+      btn(`사진 찍음 ${got}/${need}`, act(async () => { tap(); await emit("photo", { of: form.id }, { run: form.run }); render(); }), { class: got < need ? "warn" : "", "data-t": "photo" }),
     btn("저장", saveForm, { class: "primary", "data-t": "form-save" }));
 }
 
 function cancelForm() {
+  S.afterClose = null;
   S.form = null;
   S.flow = [];
   S.msg = "";
@@ -546,7 +654,7 @@ async function saveForm() {
   try {
     switch (form.kind) {
       case "day":
-        await emit("day", { ...data, site: S.pack.site, date: new Date().toLocaleDateString("sv-SE"), net: S.pack.net });
+        await emit("day", { ...data, site: S.pack.site, date: today(), net: S.pack.net }, { id: form.id });
         S.form = null;
         return go("phone_setup", {}, { push: false });
       case "tool": return await saveTool(data, form.ctx.when || "before");
@@ -573,17 +681,33 @@ async function saveForm() {
         S.notices = [];
         return goBack();
       }
+      case "run_fix": {
+        const run = S.st.runs[form.run];
+        const changes = {};
+        if (data.start != null && data.start !== run.start) changes.start = data.start;
+        if (data.from != null && data.from !== run.from) changes.from = data.from;
+        if (Object.keys(changes).length) await emit("run_edit", { changes, why: "fix_run" }, { run: run.id });
+        S.draft = null;
+        if (run.closed && run.endId && (data.end !== run.end || data.result !== run.result)) await emit("fix", { of: run.endId, data: { end: data.end, result: data.result } }, { run: run.id });
+        S.form = null;
+        return goBack();
+      }
       case "break":
-        await emit("break", data, { run: form.run });
+        if (form.fixOf) await emit("fix", { of: form.fixOf, data }, { run: form.run });
+        else await emit("break", data, { run: form.run });
         S.draft = null;
         S.form = null;
         return goBack();
       default: break;
     }
     if (form.fixOf) {
-      await emit("fix", { of: form.fixOf, data }, { run: form.run });
+      // 고친 뒤 숨은 칸은 합친 값에서 지운다(unset)
+      const shown = new Set(stepsOf(form).map((st) => st.key));
+      const unset = def.steps.map((st) => st.key).filter((k) => !shown.has(k));
+      await emit("fix", { of: form.fixOf, data: { ...data, photos_required: need, unread: unreadOf(form) }, unset }, { run: form.run });
     } else {
-      await emit(form.kind, { type: form.type, ...data, photos_required: need }, { id: form.id, run: form.run });
+      const run = form.run && S.st.runs[form.run];
+      await emit(form.kind, { type: form.type, ...data, photos_required: need, unread: unreadOf(form), breakCount: run ? run.breaks.length : undefined }, { id: form.id, run: form.run });
     }
     const got = photoCountFor(form.id);
     S.form = null;
@@ -609,20 +733,35 @@ function startDay() {
 const PHONE_ITEMS = [
   "홈 화면 아이콘으로 열었다 (메신저 링크 아님)", "두 폰의 앱 판과 자료 판이 같다", "위치 권한이 '정확한 위치'다",
   "화면 자동 꺼짐을 늘렸다", "절전 모드를 껐다", "자동 회전을 껐다", "방해 금지를 켰다", "두 폰의 시각이 자동이다", "저장 공간 5 GB 이상, 전지 충분",
-  "예비 폰에 자료를 넣고 앱을 열었다",
+  "예비 폰에 자료를 넣고 앱을 열었다", "비행기 모드로 앱을 다시 열어 봤다", "이 폰에서 같은 주소의 다른 사이트를 열지 않는다",
 ];
 
+function autoChecks() {
+  const sw = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
+  return [
+    ["위치", S.gps ? `수신 ±${Math.round(S.gps.acc)} m` : S.gpsError || (watchId === null ? "아직 안 켬" : "기다리는 중"), !!S.gps],
+    ["통신 없이 열기", sw ? "준비됨" : "아직 안 됨 (앱을 닫았다 다시 여세요)", sw],
+    ["저장 유지", S.persist === null ? "확인 전" : S.persist ? "허용됨" : "허용 안 됨 (백업 간격을 지키세요)", !!S.persist],
+    ["화면 켜짐", S.wake === "on" ? "유지 중" : S.wake === "off" ? "안 됨" : "확인 전", S.wake === "on"],
+    ["앱 판", APP_VERSION, true],
+    ["자료 판", `${S.pack.hash.slice(0, 6)}${S.pack.test ? " (시험 자료)" : ""}`, true],
+  ];
+}
+
 function phoneSetupScreen() {
-  const boxes = PHONE_ITEMS.map((t, i) => h("label", { class: "check" }, h("input", { type: "checkbox", "data-i": i }), t));
+  const rows = autoChecks();
+  const save = (passed) => act(async () => {
+    await emit("tool_check", { when: "before", tool: "phone_setup", checked: passed ? PHONE_ITEMS.length : null, of: PHONE_ITEMS.length, passed, auto: Object.fromEntries(rows.map(([k, , ok]) => [k, ok])) });
+    openForm("tool", null, { run: null, ctx: { when: "before" } });
+  });
   return h("div", { class: "screen" },
     h("h1", {}, "폰 설정 확인"),
-    h("p", { class: "small" }, `앱 판 ${APP_VERSION}, 자료 판 ${S.pack.hash.slice(0, 6)}${S.pack.test ? " (시험 자료)" : ""}`),
-    h("div", {}, boxes),
-    btn("확인하고 도구 점검으로", async () => {
-      const ok = boxes.filter((b) => b.querySelector("input").checked).length;
-      await emit("tool_check", { when: "before", tool: "phone_setup", checked: ok, of: PHONE_ITEMS.length, passed: ok === PHONE_ITEMS.length });
-      openForm("tool", null, { run: null, ctx: { when: "before" } });
-    }, { class: "primary", "data-t": "phone-ok" }));
+    h("table", {}, h("tbody", {}, rows.map(([a, b, ok]) => h("tr", {}, h("th", {}, a), h("td", { class: ok ? "" : "warn-text", "data-chk": a }, b))))),
+    !S.gps && btn("위치 켜기", () => { startGps(true); render(); }, { class: "primary", "data-t": "gps-on" }),
+    h("h2", {}, "손으로 확인할 것"),
+    h("ul", { class: "plain" }, PHONE_ITEMS.map((t) => h("li", {}, t))),
+    btn("모두 확인함, 도구 점검으로", save(true), { class: "primary", "data-t": "phone-ok" }),
+    btn("못 한 것 있음 (그래도 진행)", save(false), { "data-t": "phone-partial" }));
 }
 
 async function saveTool(d, when) {
@@ -669,23 +808,31 @@ async function saveLevelRetry(d, ctx) {
 // 걷는 순서 -------------------------------------------------------------------
 const CLOSED = new Set(["done", "partial", "not_path", "no_entry", "temp_block"]);
 const isClosed = (seg) => CLOSED.has(S.st.segStatus[seg]);
+// 걷는 순서에서는 '다시 잼'도 지나간 것으로 친다. 다시 잴 목록으로 따로 간다.
+const passed = (seg) => isClosed(seg) || S.st.segStatus[seg] === "redo";
 
 function walkList() {
   const walks = S.pack.walks || {};
-  const key = S.st.routeChoice ? S.st.routeChoice.route : "11";
-  return walks[key] || [];
+  if (S.st.routeChoice) return walks[S.st.routeChoice.route] || [];
+  const base = walks["11"] || Object.values(walks)[0] || [];
+  if (!Object.keys(S.pack.p1_groups || {}).length) return base;
+  // 3순위 길을 고르기 전에는 1, 2순위까지만 걷는다
+  return base.filter((w) => w.group === "p1" || w.group === "p2");
 }
 
 function routeNeeded() {
   const g = S.pack.p1_groups || {};
   if (!Object.keys(g).length || S.st.routeChoice) return false;
-  return Object.values(g).flat().every(isClosed);
+  if (Object.values(g).flat().every(isClosed)) return true;
+  // 1순위를 건너뛰었어도 1, 2순위를 다 지나면 값이 모자란 채로 묻는다
+  const skipped = new Set(S.st.skipped);
+  return walkList().every((w) => passed(w.seg) || skipped.has(w.seg));
 }
 
 function nextJob() {
   const list = walkList();
   const skipped = new Set(S.st.skipped);
-  return list.find((w) => !isClosed(w.seg) && !skipped.has(w.seg)) || list.find((w) => !isClosed(w.seg)) || null;
+  return list.find((w) => !passed(w.seg) && !skipped.has(w.seg)) || list.find((w) => !passed(w.seg)) || null;
 }
 
 function progressLine() {
@@ -732,6 +879,10 @@ function moveScreen() {
       h("p", { class: "small" }, progressLine()),
       mapBox(),
       h("div", { class: "row" }, btn("지도에서 고르기", () => openMap("pick"), { class: "primary", "data-t": "pick" }), btn(`다시 잴 목록 ${redo}`, () => go("redo"), { "data-t": "redo-list" })),
+      h("h2", {}, "마치기 전에"),
+      h("div", { class: "row" },
+        btn("마친 뒤 도구 점검", () => openForm("tool", null, { run: null, ctx: { when: "after" } }), { "data-t": "after-check-end" }),
+        btn("백업 파일 저장", downloadBackup, { "data-t": "backup-file-end" })),
       btn("더 보기", () => go("more"), { "data-t": "more" }));
   }
   const seg = segOf(job.seg);
@@ -746,6 +897,7 @@ function moveScreen() {
   return h("div", { class: "screen fill" },
     h("div", { class: "spread" }, h("h1", {}, `다음 일: 구간 ${job.seg}`), btn("더 보기", () => go("more"), { class: "mini", "data-t": "more" })),
     S.recover && h("div", { class: "info" }, S.recover),
+    shiftBand(),
     noticeList(),
     h("p", { class: "small" }, `${progressLine()} · ${job.move > 3 ? `바퀴를 들고 약 ${Math.round(job.move)} m 이동` : "바로 이어짐"}`),
     h("p", {}, `시작은 ${fromLabel(seg, job.from)}에서, 구간 길이 ${fmt1(seg.len)} m${seg.prio ? `, ${seg.prio}순위` : ""}`),
@@ -753,7 +905,7 @@ function moveScreen() {
     mapBox(),
     btn("도착, 여기서 시작", () => go("start", { seg: job.seg, from: job.from }), { class: "primary", "data-t": "arrive" }),
     h("div", { class: "row" },
-      btn("건너뜀", async () => { await emit("skip", { seg: job.seg }); S.recover = ""; home(); }, { "data-t": "skip" }),
+      btn("건너뜀", act(async () => { await emit("skip", { seg: job.seg }); S.recover = ""; home(); }), { "data-t": "skip" }),
       btn("다른 구간 고르기", () => openMap("pick"), { "data-t": "pick" })),
     redo ? btn(`다시 잴 목록 ${redo}`, () => go("redo"), { class: "mini", "data-t": "redo-list" }) : null);
 }
@@ -771,9 +923,10 @@ function startScreen() {
   const { seg: id, from, retry, line: lineIn } = S.params;
   const seg = segOf(id);
   const st = S.st.segStatus[id];
-  const wet = S.st.day && S.st.day.weather === "wet";
+  const wet = S.params.wet ?? !!(S.st.day && (S.st.day.weather === "wet" || S.st.day.weather === "rain"));
   const line = lineIn || "main";
   const setLine = (l) => { S.params = { ...S.params, line: l }; render(); };
+  const setWet = (v) => { S.params = { ...S.params, wet: v }; render(); };
   const ctx = { seg: id, from, retry: retry || (st ? "again" : ""), line, routeLine: line === "gentle", wet };
   return h("div", { class: "screen" },
     h("h1", {}, `구간 ${id} 시작`),
@@ -781,15 +934,20 @@ function startScreen() {
     h("p", {}, `${fromLabel(seg, from)}에서 출발, 지도 길이 ${fmt1(seg.len)} m`),
     segNotes(seg).map((n) => h("div", { class: "info" }, n)),
     h("p", { class: "small" }, "수평계 화면 단위가 °인지 보세요. 진행 방향 쪽이 높으면 +입니다."),
+    btn(wet ? "바닥 젖음 (켜짐, 누르면 끔)" : "바닥 젖음이면 누르세요", () => setWet(!wet), { class: `mini${wet ? " on" : ""}`, "data-t": "wet" }),
     seg.prio === 1 && h("div", {},
       h("h2", {}, "폭이 3 m를 넘으면 줄을 고르세요"),
       h("div", { class: "row" }, Object.entries(F.LINES).map(([k, label]) => btn(label, () => setLine(k), { class: `mini${line === k ? " on" : ""}`, "data-line": k })))),
-    btn("0으로 맞추고 시작", () => beginRun({ ...ctx, start: 0 }), { class: "primary", "data-t": "start-zero" }),
+    btn("0으로 맞추고 시작", act(() => beginRun({ ...ctx, start: 0 })), { class: "primary", "data-t": "start-zero" }),
     btn("시작값 넣기", () => openForm("start_value", null, { run: null, ctx }), { "data-t": "start-value" }),
     btn("돌아가기", goBack, { class: "mini" }));
 }
 
 async function beginRun(ctx) {
+  if (openRun()) {
+    S.notices = [{ text: `구간 ${openRun().seg}을 먼저 닫으세요` }];
+    return go("measure", {}, { push: false });
+  }
   const seg = segOf(ctx.seg);
   const stop = stopFor(seg, ctx.from);
   S.recover = "";
@@ -799,7 +957,7 @@ async function beginRun(ctx) {
   S.draft = newDraft(S.st.runs[ev.id]);
   S.stack = [];
   S.form = null;
-  const plan = C.planMarks(seg.len, fineFor(seg, ctx.from), stop, S.rules);
+  const plan = C.planMarks(seg.len, fineFor(seg, ctx.from), stop, S.rules, seg.inclines);
   S.flow = plan.length ? [] : ["surface"];
   go("measure", {}, { push: false });
   if (S.flow.length) continueFlow();
@@ -809,16 +967,18 @@ async function beginRun(ctx) {
 function newDraft(run) {
   const seg = segOf(run.seg);
   const fine = fineFor(seg, run.from);
-  const plan = C.planMarks(seg.len, fine, stopFor(seg, run.from), S.rules);
-  const saved = run.points.map((p) => ({ mark: distOf(run, p), long: p.long, kind: p.kind }));
-  const pend = C.pendingMarks(plan, saved, seg.len, fine, S.rules);
-  const nx = pend[0] || null;
+  const stop = stopFor(seg, run.from);
+  const plan = C.planMarks(seg.len, fine, stop, S.rules, seg.inclines);
+  const saved = run.points.map((p) => ({ mark: distOf(run, p), long: p.long, kind: p.kind, added: p.added }));
+  const pend = C.pendingMarks(plan, saved, seg.len, fine, S.rules, stop);
+  const { ahead, behind } = C.splitPending(pend, saved, S.rules);
+  const nx = ahead[0] || null;
   const both = S.st.levelMode === "both_avg" || !!(nx && nx.both);
   return {
     id: DB.uid(), run: run.id, dist: nx ? nx.mark : null, mark: nx ? markOfDist(run, nx.mark) : null, planned: !!nx, edited: false,
     kind: nx ? nx.kind : "more", both: !!(nx && nx.both), crossNeeded: nx ? nx.cross || S.st.levelMode === "both_avg" : true,
     method: both ? "both" : "one", baseMethod: both ? "both" : "one", sign: null, longs: [], crosses: [], buf: "", phase: nx ? "long" : "long", ten: false,
-    queue: pend.slice(1, 4).map((x) => markOfDist(run, x.mark)), noMarkPlan: !nx, note: null, clear: null, noLong: false, noCross: false,
+    queue: ahead.slice(1, 4).map((x) => markOfDist(run, x.mark)), behind: behind.map((x) => markOfDist(run, x.mark)), noMarkPlan: !nx, note: null, clear: null, noLong: false, noCross: false,
   };
 }
 
@@ -941,7 +1101,7 @@ async function saveDraft() {
   const data = {
     mark: d.mark, dist: round2(dist), breakCount: run.breaks.length, kind: d.kind, method: d.method, values: d.longs, cross: d.crosses,
     flags: draftFlags(d), planned: d.planned && !d.edited, photos_required: need, note: d.note, clear: d.clear, memo: d.memo || "",
-    no_long: d.noLong || undefined, no_cross: d.noCross || undefined,
+    no_long: d.noLong || undefined, no_cross: d.noCross || undefined, added: d.added || undefined,
   };
   let ev;
   S.saving = true;
@@ -996,9 +1156,10 @@ function signRow(sign, onSign, ten, onTen) {
 
 function pad(onKey, okLabel, okEnabled, okKey) {
   const keys = ["7", "8", "9", "4", "5", "6", "1", "2", "3"];
+  // 손을 뗄 때(click) 처리한다. 닿는 순간 화면을 바꾸면 손을 뗄 때 새 화면의 같은 자리 버튼이 또 눌린다.
   const mk = (k, label, cls = "", disabled = false) => h("button", {
     type: "button", class: cls, "data-k": k, disabled,
-    onpointerdown: (e) => { e.preventDefault(); if (!disabled) onKey(k); },
+    onclick: () => { if (!disabled) onKey(k); },
   }, label);
   return h("div", { class: "pad" },
     keys.map((k) => mk(k, k)),
@@ -1007,11 +1168,14 @@ function pad(onKey, okLabel, okEnabled, okKey) {
     okLabel ? mk(okKey, okLabel, "txt primary", !okEnabled) : mk("noop", "", "txt", true));
 }
 
+// 알림은 한 번에 하나만 보인다. 닫으면 다음 것이 나온다.
 function noticeList() {
   if (!S.notices || !S.notices.length) return null;
-  return S.notices.map((n, i) => h("div", { class: "notice" }, h("span", {}, n.text),
+  const n = S.notices[0];
+  const more = S.notices.length - 1;
+  return h("div", { class: "notice" }, h("span", {}, `${n.text}${more ? ` (알림 ${more}개 더)` : ""}`),
     n.fix ? btn("고침", () => editRecord(n.fix), { "data-t": "notice-fix" }) : null,
-    btn("닫기", () => { S.notices.splice(i, 1); render(); }, { "data-t": "notice-close" })));
+    btn("닫기", () => { S.notices.splice(0, 1); render(); }, { "data-t": "notice-close" }));
 }
 
 function gpsOffNote(run) {
@@ -1041,20 +1205,11 @@ function measureScreen() {
     h("div", { class: "m-head" },
       h("div", { class: "m-title" }, `구간 ${run.seg}${run.line !== "main" ? ` (${F.LINES[run.line]})` : ""} · 끝까지 약 ${Math.round(left)} m`),
       h("div", { class: "row tight" },
+        btn(d.added ? "더 재기 취소" : "여기 더 재기", () => toggleAdd(d, run), { class: `mini${d.added ? " on" : ""}`, "data-t": "add-here", disabled: !d.added && (d.longs.length > 0 || d.crosses.length > 0) }),
         btn(d.clear || d.memo ? "메모 있음" : "메모", () => openForm("point_note"), { class: `mini${d.clear || d.memo ? " on" : ""}`, "data-t": "note" }),
         btn("지도", () => openMap("view"), { class: "mini", "data-t": "map-btn" }),
         btn("더 보기", () => go("more"), { class: "mini", "data-t": "more" }))),
-    S.recover && h("div", { class: "info" }, S.recover),
-    gpsOffNote(run),
-    noticeList(),
-    S.photoDue && h("div", { class: "notice" }, h("span", {}, `${S.photoDue.label} 사진 ${S.photoDue.n}장 남음`),
-      btn("찍음", async () => {
-        const due = S.photoDue;
-        await emit("photo", { of: due.of }, { run: due.run });
-        due.n -= 1;
-        if (due.n <= 0) S.photoDue = null;
-        render();
-      }, { "data-t": "photo-due" })),
+    measureBand(run, d),
     h("div", { class: "m-next" },
       h("button", {
         type: "button", class: `val${inMark ? " active" : ""}`, "data-t": "next-mark",
@@ -1062,6 +1217,7 @@ function measureScreen() {
       }, h("span", { class: "small" }, "다음"), h("span", { class: `num${d.edited ? "" : " plan"}` }, inMark && d.buf ? fmt1(C.fixedValue(d.buf, 1)) : d.mark == null ? "끝" : `${fmt1(d.mark)} m`), h("span", { class: "small" }, F.POINT_KIND[d.kind] || "")),
       [-0.2, -0.1, 0.1, 0.2].map((x) => h("button", { type: "button", class: "adj", disabled: d.mark == null, "data-adj": x, onclick: () => { setMark(d, d.mark + x); render(); } }, `${x > 0 ? "+" : ""}${x}`))),
     d.queue.length ? h("div", { class: "small" }, `다음 차례: ${d.queue.map(fmt1).join(" > ")}`) : null,
+    d.behind && d.behind.length ? h("div", { class: "small" }, `지나친 예정 지점 ${d.behind.map(fmt1).join(", ")}: 구간 끝에서 못 잰 지점으로 셉니다`) : null,
     h("button", { type: "button", class: "m-last", "data-t": "last", disabled: !last, onclick: () => last && editRecord(last.id) },
       last ? `직전 ${fmt1(last.mark)} m  ${last.values.map(signed).join(" / ") || "못 잼"}  ${last.crossValue == null ? "" : fmt1(last.crossValue)}  (눌러서 고침)` : "아직 저장한 지점이 없습니다"),
     h("div", { class: "m-fields" },
@@ -1071,7 +1227,7 @@ function measureScreen() {
       h("span", { class: "row tight" },
         d.phase === "long" && !d.longs.length && btn("거친 곳", () => { d.method = d.method === "three" ? d.baseMethod : "three"; render(); }, { class: d.method === "three" ? "on" : "", "data-t": "rough" }),
         (d.phase === "cross" || (d.phase === "long" && !d.longs.length)) && btn("못 잼", () => skipSlot(d), { "data-t": "skip-slot" }),
-        btn(`찍음 ${got}/${need}`, async () => { tap(); await emit("photo", { of: d.id }, { run: run.id }); render(); }, { "data-t": "photo" }))),
+        btn(`찍음 ${got}/${need}`, act(async () => { tap(); await emit("photo", { of: d.id }, { run: run.id }); render(); }), { "data-t": "photo" }))),
     d.phase === "done" && draftFlags(d).includes("boundary") && h("div", { class: "row" }, F.BOUNDARY_NOTES.map(([k, label]) => btn(label, () => { d.note = k; render(); }, { class: `mini${d.note === k ? " on" : ""}`, "data-opt": k }))),
     signRow(d.sign, (sg) => { d.sign = sg; S.signHint = false; render(); }, d.ten, () => { d.ten = !d.ten; render(); }),
     S.signHint && h("div", { class: "notice" }, "부호를 먼저 누르세요"),
@@ -1082,6 +1238,39 @@ function measureScreen() {
       btn("폭", () => openForm("barrier", run.barriers.some((b) => b.type === "width_rep") ? "narrow" : "width_rep"), { "data-tool": "width" }),
       btn("노면", () => openForm("surface", null, { initial: { changed: run.surfaces.length > 0 } }), { "data-tool": "surface" }),
       btn("구간 끝", () => openEnd(run), { class: "warn", "data-tool": "end" })));
+}
+
+// 1시간마다 역할을 바꾼다(매뉴얼 1장). 윗줄 글자색만으로는 놓치므로 띠로 보인다.
+function shiftBand() {
+  const p = S.st && S.st.people;
+  if (!p || !p.since) return null;
+  const m = Math.floor((Date.now() - Date.parse(p.since)) / 60000);
+  if (m < S.rules.app.role_minutes) return null;
+  return h("div", { class: "notice" }, h("span", {}, `교대 시간입니다 (${p.recorder || "-"} 기록 ${m}분)`), btn("역할 바꾸기", swapRole, { "data-t": "swap-role-band" }));
+}
+
+// 측정 화면의 띠는 한 번에 하나만 보인다. 알림, 남은 사진, 위치, 복구 순이다.
+function measureBand(run, d) {
+  if (S.notices && S.notices.length) return noticeList();
+  const shift = shiftBand();
+  if (shift) return shift;
+  const debts = runPhotoRecords(run).filter((r) => r.got < r.need && r.id !== d.id).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  if (debts.length) {
+    const last = debts[debts.length - 1];
+    return h("div", { class: "notice" }, h("span", {}, `${last.label} 사진 ${last.need - last.got}장 남음${debts.length > 1 ? ` (외 ${debts.length - 1}곳)` : ""}`),
+      btn("찍음", act(async () => { tap(); await emit("photo", { of: last.id }, { run: run.id }); render(); }), { "data-t": "photo-due" }));
+  }
+  const g = gpsOffNote(run);
+  if (g) return g;
+  return S.recover ? h("div", { class: "info" }, S.recover) : null;
+}
+
+function toggleAdd(d, run) {
+  if (d.added) { S.draft = newDraft(run); render(); return; }
+  if (d.longs.length || d.crosses.length) return;
+  const both = S.st.levelMode === "both_avg";
+  Object.assign(d, { added: "here", kind: "more", planned: false, both: false, crossNeeded: true, method: both ? "both" : "one", baseMethod: both ? "both" : "one", prevPhase: "long", phase: "mark", buf: "", sign: null });
+  render();
 }
 
 function longText(d) {
@@ -1118,9 +1307,14 @@ function hintFor(d, run, need) {
   if (d.phase === "done" && draftFlags(d).includes("boundary")) return { text: "경계: 숫자와 바닥 1장, 전체 기울기인지 돌 하나인지 메모", must: true };
   const inFine = fineFor(segOf(run.seg), run.from).some(([a, b]) => (d.dist ?? 0) > a && (d.dist ?? 0) <= b);
   if (d.longs.length && C.needMore(d.longs[0], inFine, S.rules) && d.kind !== "more") return { text: "앞뒤 5 m 더 잴 지점이 생깁니다", must: false };
-  if (first) return { text: "첫 지점: 사진 1장", must: true };
+  if (d.added) return { text: "여기 더 재는 지점 (예정 지점은 그대로 남음)", must: false };
+  if (first && !d.noMarkPlan) return { text: "첫 지점: 수평계 숫자와 바닥이 보이게 사진 1장", must: true };
   if (d.mark == null) return { text: "순서에 있는 지점을 다 쟀습니다. 구간 끝으로", must: false };
-  return { text: d.kind === "more" ? "더한 지점" : "앞뒤를 먼저 불러 주세요", must: false };
+  if (d.kind === "more") {
+    const top = run.points.reduce((m, p) => Math.max(m, distOf(run, p)), -Infinity);
+    return { text: d.dist != null && d.dist < top ? "더한 지점: 5 m 뒤로 돌아가 잽니다" : "더한 지점: 5 m 앞에서 잽니다", must: false };
+  }
+  return { text: "앞뒤를 먼저 불러 주세요", must: false };
 }
 
 function editRecord(id) {
@@ -1138,17 +1332,24 @@ function editRecord(id) {
     openForm("surface", null, { run: e.run, initial: pickData(merged), fixOf: id });
   } else if (e.kind === "facility") {
     openForm("facility", merged.type, { run: e.run, initial: pickData(merged), fixOf: id });
+  } else if (e.kind === "break") {
+    openForm("break", null, { run: e.run, initial: pickData(merged), fixOf: id });
   }
 }
 
+// 고친 값을 쌓는다. 쌓기 함수와 같은 순서(순서 번호)로 돈다.
 function effective(e) {
   let data = { ...e.data };
-  for (const x of S.events) if (x.kind === "fix" && x.data.of === e.id) data = { ...data, ...x.data.data };
+  for (const x of C.sortEvents(S.events)) {
+    if (x.kind !== "fix" || x.data.of !== e.id) continue;
+    data = { ...data, ...x.data.data };
+    for (const k of x.data.unset || []) delete data[k];
+  }
   return data;
 }
 
 function pickData(d) {
-  const { type, photos_required, ...rest } = d;
+  const { type, photos_required, unread, breakCount, ...rest } = d;
   return rest;
 }
 
@@ -1158,7 +1359,9 @@ function openEnd(run) {
   const stop = stopFor(seg, run.from);
   const initial = {};
   if (stop) { initial.planned = true; initial.result = "stopped"; }
-  openForm("run_end", null, { run: run.id, initial });
+  const walked = new Set(Object.values(S.pack.walks || {}).flat().map((w) => w.seg));
+  const twin = (seg.twin || []).find((t) => !walked.has(t));
+  openForm("run_end", null, { run: run.id, initial, ctx: { twin: twin ?? null, noBarrierAsk: !run.barriers.some((b) => b.type !== "width_rep") } });
 }
 
 function endChecks(run, a) {
@@ -1170,28 +1373,48 @@ function endChecks(run, a) {
     out.warns.push(`길이: 잰 값 ${fmt1(measured)} m, 지도 ${fmt1(seg.len)} m. 구간이 맞는지 보세요`);
     out.mismatch = true;
   }
-  const plan = C.planMarks(seg.len, fineFor(seg, run.from), stopFor(seg, run.from), R);
-  if (seg.len < R.slope.short_skip && !run.points.length) out.missing.push("slope");
-  else if (plan.length && !run.points.length) out.missing.push("slope");
-  else {
-    const saved = run.points.map((p) => ({ mark: distOf(run, p), long: p.long, kind: p.kind }));
-    const left = C.pendingMarks(plan, saved, seg.len, fineFor(seg, run.from), R);
-    if (a.result === "ok" && left.length) out.warns.push(`아직 안 잰 지점 ${left.length}곳: ${left.slice(0, 4).map((p) => fmt1(p.mark)).join(", ")}`);
-    if (a.result === "ok" && left.length) out.missing.push("slope_points");
+  // 못 잰 값은 잰 것으로 치지 않는다(매뉴얼 1장 나 5, 9장 다). 저녁 도구도 같은 규칙이다.
+  const fine = fineFor(seg, run.from);
+  const stop = stopFor(seg, run.from);
+  const plan = C.planMarks(seg.len, fine, stop, R, seg.inclines);
+  const valued = run.points.filter((p) => p.long != null);
+  if (plan.length && !valued.length) out.missing.push("slope");
+  else if (plan.length) {
+    const saved = valued.map((p) => ({ mark: distOf(run, p), long: p.long, kind: p.kind, added: p.added }));
+    let left = C.pendingMarks(plan, saved, seg.len, fine, R, stop);
+    if (a.result === "stopped") left = measured == null ? [] : left.filter((p) => p.mark < measured - R.slope.match_tol);
+    else if (a.result !== "ok") left = [];
+    if (left.length) {
+      out.warns.push(`아직 안 잰 지점 ${left.length}곳: ${left.slice(0, 4).map((p) => fmt1(markOfDist(run, p.mark))).join(", ")}`);
+      out.missing.push("slope_points");
+    }
   }
-  if (seg.len >= R.width.skip_len && !run.barriers.some((b) => b.type === "width_rep")) out.missing.push("width");
+  if (seg.len >= R.width.skip_len && !run.barriers.some((b) => b.type === "width_rep" && b.value != null)) out.missing.push("width");
   if (!run.surfaces.length) out.missing.push("surface");
+  if (run.barriers.some((b) => b.unread && b.unread.length)) out.missing.push("barrier_value");
   return out;
 }
 
-const MISSING_LABEL = { slope: "경사", slope_points: "일부 경사 지점", width: "폭", surface: "노면", cross: "좌우 경사", other: "그 밖" };
+const MISSING_LABEL = F.MISSING_LABEL;
+
+// 사진 셈은 기록마다 요구와 찍음을 비교한다. 시설 사진은 구간 셈에 넣지 않는다.
+function runPhotoRecords(run) {
+  const recs = [];
+  for (const p of run.points) recs.push({ id: p.id, at: p.at, need: p.photos_required || 0, label: `표시값 ${fmt1(p.mark)}` });
+  for (const b of run.barriers) recs.push({ id: b.id, at: b.at, need: b.photos_required || 0, label: `${(F.BARRIERS[b.type] || {}).label || b.type} ${fmt1(b.mark)}` });
+  for (const b of run.surfaces) recs.push({ id: b.id, at: b.at, need: b.photos_required || 0, label: `노면 ${fmt1(b.mark)}` });
+  for (const f of S.st.facilities) if (f.run === run.id) recs.push({ id: f.id, at: f.at, need: f.photos_required || 0, label: `시설 ${(F.FACILITIES[f.type] || {}).label || f.type}`, fac: true });
+  for (const m of S.st.mapChecks) if (m.run === run.id) recs.push({ id: m.id, at: m.at, need: m.photos_required || 0, label: "지도 표시 확인", fac: true });
+  return recs.map((r) => ({ ...r, got: photoCountFor(r.id) }));
+}
 
 function photoSummary(run) {
-  let need = 0;
-  for (const p of run.points) need += p.photos_required || 0;
-  for (const b of run.barriers) need += b.photos_required || 0;
-  for (const b of run.surfaces) need += b.photos_required || 0;
-  return { need, got: run.photoCount };
+  const recs = runPhotoRecords(run).filter((r) => !r.fac);
+  return {
+    need: recs.reduce((n, r) => n + r.need, 0),
+    got: recs.reduce((n, r) => n + Math.min(r.got, r.need), 0),
+    short: recs.filter((r) => r.got < r.need),
+  };
 }
 
 function endReview(form) {
@@ -1206,13 +1429,13 @@ function endReview(form) {
     chk.warns.map((w) => h("div", { class: "notice" }, w)),
     h("div", { class: "info" },
       h("div", {}, `잰 지점 ${run.points.length}곳: 오르막 ${up}, 내리막 ${down}. 방향이 맞나요`),
-      h("div", {}, `사진: 요구 ${ph.need}장, 찍음 ${ph.got}장`),
+      h("div", {}, `사진: 요구 ${ph.need}장, 찍음 ${ph.got}장${ph.short.length ? `. 모자람: ${ph.short.slice(0, 4).map((r) => `${r.label} ${r.need - r.got}장`).join(", ")}` : ""}`),
       h("div", {}, `못 잰 항목: ${missing.length ? missing.map((m) => MISSING_LABEL[m] || m).join(", ") : "없음"}`)),
     h("div", { class: "row" },
       btn("못 잰 것 있음", () => { form.ctx.extraMissing = extra.includes("other") ? extra.filter((x) => x !== "other") : [...extra, "other"]; render(); }, { class: `mini${extra.includes("other") ? " on" : ""}`, "data-t": "missing-other" }),
       btn("지금 고침", () => { S.form = null; goBack(); }, { class: "mini", "data-t": "fix-now" })),
-    chk.mismatch && btn("다시 잴 목록에 넣고 닫기", () => closeRun(form, cleanAnswers(form), true), { class: "warn", "data-t": "close-redo" }),
-    btn("닫고 다음 구간으로", () => closeRun(form, cleanAnswers(form), false), { class: "primary", "data-t": "close-run" }));
+    chk.mismatch && btn("다시 잴 목록에 넣고 닫기", act(() => closeRun(form, cleanAnswers(form), true)), { class: "warn", "data-t": "close-redo" }),
+    btn("닫고 다음 구간으로", act(() => closeRun(form, cleanAnswers(form), false)), { class: "primary", "data-t": "close-run" }));
 }
 
 async function closeRun(form, data, redo) {
@@ -1221,7 +1444,10 @@ async function closeRun(form, data, redo) {
   const missing = [...new Set([...chk.missing, ...(form.ctx.extraMissing || [])])];
   const noted = run.points.filter((p) => p.no_cross).length ? ["cross"] : [];
   await flushTrack();
-  await emit("run_end", { end: data.end, result: data.result, reason: data.reason || null, memo: data.memo || "", planned: !!form.answers.planned, missing: [...new Set([...missing, ...noted])] }, { run: run.id });
+  await emit("run_end", {
+    end: data.end, result: data.result, reason: data.reason || null, memo: data.memo || "", planned: !!form.answers.planned, missing: [...new Set([...missing, ...noted])],
+    no_barrier: data.no_barrier || null, twin: data.twin ? { seg: form.ctx.twin, result: data.twin } : null,
+  }, { run: run.id });
   if (redo) await emit("redo", { seg: run.seg, why: "length" });
   S.form = null;
   S.draft = null;
@@ -1237,6 +1463,7 @@ async function closeRun(form, data, redo) {
     S.notices = [{ text: `폭이 3 m를 넘는 구간입니다. 다른 줄(${F.LINES[others[run.line]]})을 반대로 걸으며 이어서 재세요` }];
     return go("start", { seg: run.seg, from: run.from === segNow.a ? segNow.b : segNow.a, line: others[run.line], retry: "line" }, { push: false });
   }
+  if (S.afterClose === "draw") { S.afterClose = null; return openMap("draw"); }
   home();
 }
 
@@ -1262,11 +1489,11 @@ function routeScreen() {
   });
   const pick = S.routePick;
   const choose = (route) => { S.routePick = route; render(); };
-  const save = async (why) => {
+  const save = act(async (why) => {
     await emit("route_choice", { route: S.routePick, why, stats: Object.fromEntries(Object.entries(g).map(([k, ids]) => [k, groupStats(ids)])) });
     S.routePick = null;
     home();
-  };
+  });
   return h("div", { class: "screen" },
     h("h1", {}, "3순위 길 고르기"),
     h("p", { class: "small" }, "1순위 값을 보고 사람이 고릅니다. 11번이 4.7° 이하면 11번 길, 11번이 4.8° 이상이고 10번이 4.7° 이하면 10번 길, 둘 다 넘으면 정문 쪽입니다."),
@@ -1283,7 +1510,8 @@ function routeScreen() {
 }
 
 // 지도 화면 --------------------------------------------------------------------
-function openMap(mode) {
+function openMap(mode, changeRun = null) {
+  S.changeRun = changeRun;
   S.mapMode = mode;
   S.mapSel = null;
   S.mapList = false;
@@ -1339,23 +1567,29 @@ function mapScreen() {
     kids.push(h("p", { class: "small" }, `양 끝과 꺾이는 곳을 2~4점 찍으세요. ${S.drawXy.length / 2}점`));
     kids.push(h("div", { class: "row" },
       btn("되돌리기", () => { S.drawXy = S.drawXy.slice(0, -2); v.draft = S.drawXy; v.draw(); render(); }, { "data-t": "draw-undo" }),
-      btn("완료", () => finishDraw(), { class: "primary", disabled: S.drawXy.length < 4, "data-t": "draw-done" })));
+      btn("완료", act(() => finishDraw()), { class: "primary", disabled: S.drawXy.length < 4, "data-t": "draw-done" })));
     return h("div", { class: "screen fill" }, kids);
   }
   if (S.mapMode === "view") return h("div", { class: "screen fill" }, kids);
   if (S.mapSel) {
     const s = S.pack.segs[S.mapSel.seg];
-    const pick = async (from) => {
+    const pick = act(async (from) => {
       if (S.mapMode === "change") {
-        const run = openRun();
+        const run = S.changeRun ? S.st.runs[S.changeRun] : openRun();
         await emit("run_edit", { changes: { seg: s.seg, from }, prev_seg: run.seg, why: "wrong_seg" }, { run: run.id });
         S.draft = null;
         S.mapCands = null;
+        if (S.changeRun) {
+          // 기록 목록에서 왔다. 옛 구간을 담은 고치기 화면은 건너뛰고 목록으로 돌아간다.
+          S.changeRun = null;
+          S.form = null;
+          S.stack.pop();
+        }
         return goBack();
       }
       S.mapCands = null;
       go("start", { seg: s.seg, from });
-    };
+    });
     kids.push(h("p", {}, `구간 ${s.seg}, ${fmt1(s.len)} m. 어디서 출발하나요`));
     kids.push(h("div", { class: "row" }, btn("A에서 출발", () => pick(s.a), { class: "primary", "data-from": s.a }), btn("B에서 출발", () => pick(s.b), { class: "primary", "data-from": s.b })));
     kids.push(btn("다른 구간", () => { S.mapSel = null; v.selected = null; v.draw(); render(); }, { class: "mini" }));
@@ -1379,7 +1613,8 @@ async function finishDraw() {
   const mpp = S.pack.map.mpp;
   let len = 0;
   for (let i = 0; i + 3 < xy.length; i += 2) len += Math.hypot(xy[i + 2] - xy[i], xy[i + 3] - xy[i + 1]) * mpp;
-  const no = `N${Object.keys(S.st.newPaths).length + 1}`;
+  // 폰마다 N1이 겹치지 않게 폰 표시를 붙인다
+  const no = `N${Object.keys(S.st.newPaths).length + 1}-${S.dev.slice(0, 4)}`;
   const near = (x, y) => {
     let best = null;
     for (const [id, p] of Object.entries(S.pack.nodes)) {
@@ -1392,7 +1627,31 @@ async function finishDraw() {
   S.drawXy = [];
   S.view.draft = null;
   S.stack = [];
+  const run = openRun();
+  if (S.newPathFor && run && run.id === S.newPathFor) {
+    // 잰 지점을 새 길로 옮긴다. 표시값은 걸은 거리 그대로라 값은 안 바뀐다. 옛 선에는 지점 없는 '길 아님'을 남긴다.
+    S.newPathFor = null;
+    const old = { seg: run.seg, from: run.from };
+    await emit("run_edit", { changes: { seg: no, from: `${no}a` }, prev_seg: old.seg, why: "new_path" }, { run: run.id });
+    const mark = await emit("run_start", { seg: old.seg, from: old.from, start: 0, line: "main", routeLine: false, retry: "not_path", wet: false, planned_stop: null });
+    await emit("run_end", { end: null, result: "not_path", reason: null, memo: `새 길 ${no}로 옮김`, planned: false, missing: [] }, { run: mark.id });
+    S.draft = null;
+    return go("measure", {}, { push: false });
+  }
+  S.newPathFor = null;
   go("start", { seg: no, from: `${no}a` }, { push: false });
+}
+
+// 재는 중에 새 길을 그리려 하면 지금 구간을 어떻게 할지 먼저 묻는다
+function newPathAskScreen() {
+  const run = openRun();
+  if (!run) { setTimeout(() => openMap("draw"), 0); return h("div", { class: "screen" }); }
+  return h("div", { class: "screen" },
+    h("h1", {}, "새 길 그리기"),
+    h("p", {}, `지금 구간 ${run.seg}을 재는 중입니다. 어떻게 할까요`),
+    btn("잰 지점을 새 길로 옮기기 (지도의 선이 실제 길이 아님)", () => { S.newPathFor = run.id; openMap("draw"); }, { class: "primary", "data-t": "np-move" }),
+    btn("지금 구간을 닫고 새 길 재기", () => { S.afterClose = "draw"; openEnd(run); }, { "data-t": "np-close" }),
+    btn("취소", goBack, { class: "mini", "data-t": "np-cancel" }));
 }
 
 // 더 보기 ----------------------------------------------------------------------
@@ -1452,12 +1711,12 @@ async function shareBackup() {
   render();
 }
 
-async function swapRole() {
+const swapRole = act(async () => {
   const p = S.st.people;
   await emit("role", { measurer: p.recorder, recorder: p.measurer });
   syncSoon();
-  await shareBackup();
-}
+  shareBackup();
+});
 
 function moreScreen() {
   const run = openRun();
@@ -1469,17 +1728,17 @@ function moreScreen() {
     S.msg && h("div", { class: "notice" }, S.msg),
     run && section("지금 구간",
       btn("끊김", () => openForm("break"), { "data-t": "break" }),
-      btn("출발 마디 바꾸기", async () => {
+      btn("출발 마디 바꾸기", act(async () => {
         await emit("run_edit", { changes: { from: otherFrom }, why: "wrong_dir" }, { run: run.id });
         S.draft = null;
         render();
-      }, { "data-t": "flip-from" }),
+      }), { "data-t": "flip-from" }),
       btn("구간 바꾸기", () => openMap("change"), { "data-t": "change-seg" })),
     h("h2", {}, "장벽과 상태"),
     h("div", { class: "options grid" }, Object.entries(F.BARRIERS).filter(([k]) => !["bump", "gap", "width_rep"].includes(k)).map(([k, d]) => btn(d.label, () => openForm("barrier", k), { "data-barrier": k, class: "mini" }))),
     h("h2", {}, "시설"),
     h("div", { class: "options grid" }, Object.entries(F.FACILITIES).map(([k, d]) => btn(d.label, () => openForm("facility", k), { "data-fac": k, class: "mini" }))),
-    h("div", { class: "row" }, btn("지도 표시 확인", () => openForm("map_check"), { class: "mini", "data-t": "map-check" }), btn("새 길", () => openMap("draw"), { class: "mini", "data-t": "new-path-more" })),
+    h("div", { class: "row" }, btn("지도 표시 확인", () => openForm("map_check"), { class: "mini", "data-t": "map-check" }), btn("새 길", () => (run ? go("newpath_ask") : openMap("draw")), { class: "mini", "data-t": "new-path-more" })),
     h("h2", {}, "역할과 백업"),
     btn("역할 바꾸고 백업 보내기", swapRole, { class: "primary", "data-t": "swap-role" }),
     h("p", { class: "small" }, `기록 ${S.events.length}건. 파일 저장 ${clock(S.lastBackup)}, 보낸 시각 ${clock(S.lastShared)}`),
@@ -1490,7 +1749,7 @@ function moreScreen() {
     h("p", { class: "small" }, Sync.isConfigured() ? `${S.user ? "로그인됨" : "로그인 안 됨"}. 전송 대기 ${S.pendingN}건, 마지막 전송 ${clock(S.lastSent)}${S.syncError ? `. ${S.syncError}` : ""}` : "자료 파일에 데이터베이스 정보가 없습니다"),
     Sync.isConfigured() && h("div", { class: "row" },
       S.user ? btn("지금 보내기", syncNow, { "data-t": "sync-now" }) : btn("로그인", () => go("login"), { "data-t": "go-login" }),
-      S.user && btn("내려받아 합치기", pullDb, { "data-t": "pull-db" })),
+      S.user && btn("로그아웃", async () => { await Sync.logout(); S.user = null; render(); }, { class: "mini", "data-t": "logout" })),
     h("h2", {}, "도구 다시 점검"),
     h("div", { class: "options grid" },
       btn("수평계 떨어뜨림", () => openForm("level", null, { run: null, ctx: { when: "drop" } }), { class: "mini", "data-t": "recheck-level" }),
@@ -1500,6 +1759,10 @@ function moreScreen() {
     btn("기록 목록과 고치기", () => go("records"), { "data-t": "records" }),
     btn(`다시 잴 목록 ${S.st.redo.length}`, () => go("redo"), { "data-t": "redo-list" }),
     btn("이 폰 점검", () => go("device"), { "data-t": "device" }),
+    Object.keys(S.pack.p1_groups || {}).length ? btn(S.st.routeChoice ? `3순위 다시 고르기 (지금 ${S.st.routeChoice.route === "gate" ? "정문 쪽" : `${S.st.routeChoice.route}번 길`})` : "3순위 길 고르기", () => go("route"), { "data-t": "route-again" }) : null,
+    h("h2", {}, "다른 자료 넣기"),
+    h("p", { class: "small" }, `지금 자료: ${S.pack.name}${S.pack.test ? " (시험 자료)" : ""}. 다른 대상지 자료를 넣어도 이 기록은 폰에 그대로 남습니다.`),
+    h("input", { type: "file", accept: ".json,.txt,application/json", "data-t": "pack-file", onchange: (e) => e.target.files[0] && importPack(e.target.files[0]) }),
     h("p", { class: "small" }, "13 mm 미만의 턱은 기록하지 않았고, 13 mm 이상도 걸으며 찾은 것만 적었습니다."));
 }
 
@@ -1507,7 +1770,8 @@ function recordsScreen() {
   const items = [];
   for (const id of [...S.st.runOrder].reverse()) {
     const r = S.st.runs[id];
-    items.push(h("h2", {}, `구간 ${r.seg}${r.closed ? ` · ${F.labelOf(F.RESULTS, r.result)}` : " · 재는 중"} · 끝값 ${fmt1(r.end)}`));
+    items.push(btn(`구간 ${r.seg}${r.closed ? ` · ${F.labelOf(F.RESULTS, r.result)}` : " · 재는 중"} · 시작값 ${fmt1(r.start)} · 끝값 ${fmt1(r.end)} (눌러서 고침)`, () => openRunFix(r), { class: "mini on", "data-run": r.id }));
+    for (const b of r.breaks) items.push(btn(`끊김 ${fmt1(b.orig)} → ${fmt1(b.now)}${b.rev > 1 ? " (고침)" : ""}`, () => editRecord(b.id), { class: "mini", "data-rec": b.id }));
     for (const p of r.points) {
       items.push(btn(`${fmt1(p.mark)} m ${p.values.map(signed).join(" / ") || "못 잼"} 좌우 ${fmt1(p.crossValue)}${p.flags.length ? ` (${p.flags.join(", ")})` : ""}${p.rev > 1 ? " (고침)" : ""}`, () => editRecord(p.id), { class: "mini", "data-rec": p.id }));
     }
@@ -1560,6 +1824,7 @@ function homeScreen() {
 const SCREENS = {
   pack: packScreen, login: loginScreen, form: formScreen, phone_setup: phoneSetupScreen, move: moveScreen, start: startScreen,
   measure: measureScreen, route: routeScreen, map: mapScreen, more: moreScreen, redo: redoScreen, records: recordsScreen, device: deviceScreen,
+  newpath_ask: newPathAskScreen,
 };
 
 // 전송 --------------------------------------------------------------------------
@@ -1580,6 +1845,8 @@ async function syncNow() {
     if (r.sent) S.lastSent = nowIso();
   } catch (e) {
     S.syncError = e.message;
+    S.user = await Sync.currentUser().catch(() => S.user);
+    if (S.screen === "more") render();
   }
   S.pendingN = await DB.pendingCount();
   refreshTop();
@@ -1588,7 +1855,7 @@ async function syncNow() {
 async function pullDb() {
   S.msg = "";
   try {
-    const r = await Sync.pullAll(S.pack.site);
+    const r = await Sync.pullAll(S.pack.site, sameSite);
     await reloadEvents();
     setRecover(`데이터베이스에서 ${r.added}건 받음`);
     S.msg = "";
@@ -1604,8 +1871,14 @@ async function pullDb() {
 let watchId = null;
 let lastTrack = 0;
 let trackBuf = [];
-function startGps() {
-  if (watchId !== null || !navigator.geolocation) return;
+function startGps(force = false) {
+  if (!navigator.geolocation) { S.gpsError = "이 브라우저는 위치를 못 씁니다"; return; }
+  if (watchId !== null) {
+    if (!force) return;
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+  S.gpsError = "";
   watchId = navigator.geolocation.watchPosition((p) => {
     S.gps = { lon: p.coords.longitude, lat: p.coords.latitude, acc: p.coords.accuracy, t: new Date(p.timestamp).toISOString() };
     S.gpsError = "";
@@ -1616,7 +1889,13 @@ function startGps() {
     }
     refreshTop();
     if (S.view) syncView();
-  }, (e) => { S.gpsError = e.message || "위치 오류"; refreshTop(); }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
+    if (S.screen === "phone_setup") render();
+  }, (e) => {
+    S.gpsError = e.code === 1 ? "위치 권한 거부됨" : e.message || "위치 오류";
+    if (e.code === 1 && watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+    refreshTop();
+    if (S.screen === "phone_setup") render();
+  }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
 }
 const round6 = (x) => Math.round(x * 1e6) / 1e6;
 
@@ -1673,12 +1952,24 @@ function guards() {
   setInterval(() => { syncNow(); }, 30000);
 
   try {
+    // 다른 창이 5초마다 알린다. 12초 동안 소식이 없거나 닫힌다고 하면 띠를 지운다.
     const ch = new BroadcastChannel("bf-gather");
-    ch.postMessage("hello");
-    ch.onmessage = (m) => {
-      if (m.data === "hello") ch.postMessage("here");
-      if (!S.other) { S.other = true; render(); }
+    let seen = 0;
+    const check = () => {
+      const other = Date.now() - seen < 12000;
+      if (other !== S.other) { S.other = other; render(); }
     };
+    ch.onmessage = (m) => {
+      if (m.data === "bye") seen = 0;
+      else {
+        seen = Date.now();
+        if (m.data === "hello") ch.postMessage("here");
+      }
+      check();
+    };
+    ch.postMessage("hello");
+    setInterval(() => { ch.postMessage("ping"); check(); }, 5000);
+    window.addEventListener("pagehide", () => ch.postMessage("bye"));
   } catch { /* 없어도 동작한다 */ }
 
   if (navigator.getBattery) {
@@ -1721,9 +2012,39 @@ async function registerSw() {
 }
 
 // 시작 ----------------------------------------------------------------------------
+// 시작이 실패하면 '불러오는 중'에 멈추지 않고 이유, 다시 열기, 기록 꺼내기를 보인다
+function bootFail(e) {
+  root.replaceChildren(h("div", { class: "screen", "data-t": "boot-fail" },
+    h("h1", {}, "앱을 열지 못했습니다"),
+    h("div", { class: "notice" }, String((e && e.message) || e)),
+    h("p", {}, "저장된 기록은 폰에 남아 있습니다. 다시 열어 보고, 안 되면 기록을 내려받아 예비 폰에서 이어 쓰세요."),
+    btn("다시 열기", () => location.reload(), { class: "primary", "data-t": "boot-reload" }),
+    btn("저장된 기록 내려받기", async () => {
+      try {
+        const events = await DB.rawEvents(DB.currentName());
+        const pk = await DB.getPack().catch(() => null);
+        const body = { format: "bf-backup-1", site: pk && pk.site, net: pk && pk.net, test: !!(pk && pk.test), app: APP_VERSION, at: nowIso(), count: events.length, events };
+        const a = h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(body)], { type: "text/plain" })), download: `bf_rescue_${Date.now()}_${events.length}.txt` });
+        document.body.append(a);
+        a.click();
+        a.remove();
+      } catch (err) {
+        root.append(h("div", { class: "notice" }, `내려받기도 실패: ${err.message || err}`));
+      }
+    }, { "data-t": "boot-backup" })));
+}
+
 async function boot() {
   try {
-    await DB.openStore();
+    await bootInner();
+  } catch (e) {
+    bootFail(e);
+  }
+}
+
+async function bootInner() {
+  try {
+    await DB.openStore(DB.startName());
   } catch (e) {
     root.replaceChildren(h("div", { class: "band-red" }, `저장소를 열 수 없습니다: ${e.message}`));
     return;
@@ -1740,15 +2061,30 @@ async function boot() {
   keepAwake();
   registerSw();
   if (!S.pack) { go("pack", {}, { push: false }); return; }
+  const switched = sessionStorage.getItem("bf-after-switch");
+  if (switched) {
+    sessionStorage.removeItem("bf-after-switch");
+    S.switchNote = switched;
+    go("login", {}, { push: false });
+    return;
+  }
   const ui = await DB.getMeta("ui");
   if (ui) {
-    S.draft = ui.draft || null;
-    S.form = ui.form || null;
+    // 저장 직후 앱이 죽었으면 화면 상태가 저장 전 것이다. 이미 저장된 번호의 초안과 입력은 버린다.
+    const saved = new Set(S.events.map((e) => e.id));
+    S.draft = ui.draft && !saved.has(ui.draft.id) ? ui.draft : null;
+    S.form = ui.form && !(saved.has(ui.form.id) && !ui.form.fixOf) ? ui.form : null;
+    if (S.form) delete S.form.saving;
     S.flow = ui.flow || [];
     S.photoDue = ui.photoDue || null;
   }
   setRecover();
-  if (!S.st.day && S.form && S.form.kind !== "day") S.form = null;
+  // 이미 끝낸 아침 입력이나 날짜가 지난 입력은 되살리지 않는다
+  const stale = S.form && (
+    (S.form.kind === "day" && S.st.day && S.st.day.date === today())
+    || (S.form.kind === "tool" && (S.form.ctx.when || "before") === "before" && checkedToday("level"))
+    || (S.form.kind !== "day" && (!S.st.day || S.st.day.date !== today())));
+  if (stale) S.form = null;
   if (S.form) {
     S.screen = "form";
     S.stack = openRun() ? [{ screen: "measure", params: {} }] : [];

@@ -21,12 +21,17 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 /* 윗줄 */
 .top { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: center; padding: 3px 10px; font-size: 12px; font-weight: 600; background: var(--pale); }
 .top .warn { color: var(--white); background: var(--orange); padding: 0 6px; border-radius: 4px; }
+.top button { min-height: 26px; padding: 0 8px; font-size: 12px; border-width: 1px; }
+.warn-text { color: var(--orange); font-weight: 800; }
+ul.plain { margin: 0; padding-left: 18px; line-height: 1.5; font-size: 14px; }
 .band-red { padding: 8px 10px; background: var(--orange); color: var(--white); font-weight: 800; font-size: 15px; }
 .saved { color: var(--blue); font-weight: 800; }
 
 /* 공통 */
 .screen { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: 8px 10px 10px; gap: 8px; overscroll-behavior: contain; }
 .screen.fill { overflow: hidden; }
+/* 측정 화면: 부호 줄부터 숫자 칸, 도구 줄을 화면 아래에 붙인다. 위에 띠가 떠도 키 자리가 그대로다. */
+.screen.fill > .sign { margin-top: auto; }
 h1 { font-size: 19px; margin: 2px 0; font-weight: 800; }
 h2 { font-size: 16px; margin: 6px 0 2px; font-weight: 800; }
 p { margin: 2px 0; line-height: 1.4; }
