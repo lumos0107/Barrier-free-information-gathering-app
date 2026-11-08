@@ -1874,9 +1874,12 @@ def test_back_keeps_form(p, url):
     a.tap('[data-tool="bump"]')
     a.num("30")
     a.page.go_back()
-    a.wait_text("뒤로 가기로 나갈 수 없습니다")
+    a.see('[data-t="back-hint"]')
+    assert "취소를 누르세요" in a.page.locator('[data-t="back-hint"]').inner_text()
+    assert "나갈 수 없습니다" not in a.text()
     assert a.page.locator('[data-t="next-mark"]').count() == 0, a.text()[:200]
     a.num("30")
+    assert a.page.locator('[data-t="back-hint"]').count() == 0, "답하면 안내가 사라져야 함"
     a.opt("up")
     a.opt("square")
     a.num("100")
@@ -1914,9 +1917,177 @@ def test_phone_setup_shows_db(p, url):
     a.page.locator('[data-t="password"]').fill("y")
     a.t("login")
     a.see('[data-t="phone-ok"]')
+    a.wait_text("로그인됨, 전송 끝")
     cell = a.page.locator('[data-chk="데이터베이스"]')
-    assert "로그인됨" in cell.inner_text() and "warn-text" not in (cell.get_attribute("class") or ""), cell.inner_text()
+    assert "warn-text" not in (cell.get_attribute("class") or ""), cell.inner_text()
     assert a.page.locator('[data-t="setup-login"]').count() == 0
+    # 로그인이 풀리면 화면을 옮기지 않아도 경고로 바뀐다
+    a.page.evaluate("""async () => { const m = await import(new URL('js/store.js', location.href).href); await m.setMeta('session', null, true); await window.__bf.syncNow(); }""")
+    a.wait_text("로그인 안 함")
+    a.close()
+    return a
+
+
+def test_back_keeps_text(p, url):
+    """뒤로 가기가 글 칸에 쓰던 내용을 지우지 않고, 취소 단추가 없는 양식에서는 취소를 말하지 않는다."""
+    a = App(p, url)
+    a.load_pack()
+    a.t("login-skip")
+    a.opt("sunny")
+    a.page.locator('[data-t="text"]').fill("측정자 이름")
+    a.page.go_back()
+    a.see('[data-t="back-hint"]')
+    assert a.page.locator('[data-t="text"]').input_value() == "측정자 이름"
+    assert "취소" not in a.page.locator('[data-t="back-hint"]').inner_text()
+    time.sleep(0.3)
+    a.page.reload()
+    a.see('[data-t="text"]', timeout=15000)
+    assert a.page.locator('[data-t="text"]').input_value() == "측정자 이름", "다시 열면 쓰던 글이 돌아와야 함"
+    assert a.page.locator('[data-t="back-hint"]').count() == 0
+    a.close()
+    return a
+
+
+def test_back_hint_leaves_with_form(p, url):
+    """뒤로 가기 안내는 양식에만 보이고, 저장한 뒤 다른 화면에 남지 않는다."""
+    a = App(p, url)
+    a.setup_day()
+    a.t("more")
+    a.t("angle")
+    a.fill_form()
+    a.see('[data-t="form-save"]')
+    a.page.go_back()
+    a.wait_text("뒤로 가기")
+    a.t("form-save")
+    a.see('[data-t="angle"]')
+    assert "뒤로 가기" not in a.text(), a.text()[:300]
+    a.close()
+    return a
+
+
+def _db_app(p, url, name, status):
+    """데이터베이스 정보가 있는 자료로 앱을 연다. status()가 전송 응답 코드를 정한다."""
+    pk = TMP / name
+    pk.write_text(json.dumps(fake_pack.build(HERE.parent / "tools" / "rules.json", db=FAKE_DB), ensure_ascii=False), encoding="utf-8")
+    a = App(p, url)
+
+    def handler(route, request):
+        if "/auth/v1/token" in request.url:
+            return route.fulfill(status=200, json={"access_token": "tok", "refresh_token": "ref", "expires_in": 3600})
+        if "/rest/v1/field_records" in request.url:
+            if request.method != "POST":
+                return route.fulfill(status=200, json=[])
+            code = status()
+            return route.fulfill(status=code, body="" if code == 201 else '{"message":"boom"}')
+        return route.abort()
+
+    a.ctx.route("https://fake-project.supabase.co/**", handler)
+    a.load_pack(pk)
+    a.page.locator('[data-t="email"]').fill("x@test.invalid")
+    a.page.locator('[data-t="password"]').fill("y")
+    a.t("login")
+    return a
+
+
+def test_phone_setup_db_row_follows_send(p, url):
+    """폰 설정의 데이터베이스 줄이 화면을 옮기지 않아도 전송 결과를 따라 바뀐다."""
+    code = {"now": 500}
+    a = _db_app(p, url, "fake_db_pack4.json", lambda: code["now"])
+    day_form(a)
+    a.see('[data-t="phone-ok"]')
+    a.page.evaluate("window.__bf.syncNow()")
+    a.wait_text("전송 대기")
+    cell = a.page.locator('[data-chk="데이터베이스"]')
+    assert "warn-text" in (cell.get_attribute("class") or ""), cell.inner_text()
+    code["now"] = 201
+    a.page.evaluate("window.__bf.syncNow()")
+    a.wait_text("로그인됨, 전송 끝")
+    assert "warn-text" not in (cell.get_attribute("class") or ""), cell.inner_text()
+    a.t("phone-ok")
+    a.poll("window.__bf.events().some(e => e.data.tool === 'phone_setup')")
+    e = [x for x in a.events() if x["data"].get("tool") == "phone_setup"][-1]
+    assert e["data"]["auto"]["데이터베이스"] is True, e["data"]
+    a.close()
+    return a
+
+
+def test_phone_setup_saves_pending_as_not_ok(p, url):
+    """전송 대기가 남은 채 폰 설정을 저장하면 데이터베이스를 정상으로 적지 않는다."""
+    a = _db_app(p, url, "fake_db_pack5.json", lambda: 201)
+    a.see('[data-opt="sunny"]')
+    a.ctx.set_offline(True)
+    day_form(a)
+    a.see('[data-t="phone-ok"]')
+    a.wait_text("전송 대기")
+    cell = a.page.locator('[data-chk="데이터베이스"]')
+    assert "warn-text" in (cell.get_attribute("class") or ""), cell.inner_text()
+    a.t("phone-ok")
+    a.poll("window.__bf.events().some(e => e.data.tool === 'phone_setup')")
+    e = [x for x in a.events() if x["data"].get("tool") == "phone_setup"][-1]
+    assert e["data"]["auto"]["데이터베이스"] is False, e["data"]
+    a.ctx.set_offline(False)
+    a.close()
+    return a
+
+
+def test_fix_now_forgets_draw(p, url):
+    """새 길을 재려고 구간을 닫다가 지금 고침을 누르면, 그 뒤 구간을 닫아도 지도 그리기로 가지 않는다."""
+    a = App(p, url)
+    a.setup_day()
+    a.start_run()
+    a.see('[data-t="next-mark"]')
+    a.t("more")
+    a.t("new-path-more")
+    a.t("np-close")
+    a.num("160")
+    a.opt("ok")
+    a.opt("checked")
+    a.t("fix-now")
+    a.t("np-cancel")
+    a.page.go_back()
+    a.see('[data-t="next-mark"]')
+    a.page.locator('[data-tool="end"]').click()
+    a.num("160")
+    a.opt("ok")
+    a.opt("checked")
+    a.t("close-run")
+    a.wait_text("3순위")
+    assert a.page.locator('[data-t="draw-done"]').count() == 0
+    a.close()
+    return a
+
+
+def test_end_gap_cleared_on_the_spot(p, url):
+    """마지막 지점에서 끝까지 5 m를 넘으면 못 잰 지점이 뜨고, 지금 고침으로 그 자리에서 재면 사라진다."""
+    a = App(p, url)
+    a.setup_day()
+    to_seg0(a)
+    a.fill_point("11")
+    a.save_point()
+    a.first_flow()
+    for _ in range(2):
+        a.fill_point("11")
+        a.save_point()
+    a.page.locator('[data-tool="end"]').click()
+    a.num("310")
+    a.opt("ok")
+    a.opt("checked")
+    a.wait_text("아직 안 잰 지점 1곳: 30.0")
+    a.wait_text("일부 경사 지점")
+    a.t("fix-now")
+    a.see('[data-t="next-mark"]')
+    a.t("add-here")
+    a.num("300")
+    a.fill_point("11")
+    a.save_point()
+    a.page.locator('[data-tool="end"]').click()
+    a.num("310")
+    a.opt("ok")
+    a.opt("checked")
+    a.wait_text("못 잰 항목: 없음")
+    a.t("close-run")
+    s = a.wait_state(lambda s: any(r["closed"] and r["seg"] == 0 for r in s["runs"].values()))
+    assert [r for r in s["runs"].values() if r["closed"] and r["seg"] == 0][0]["missing"] == [], s["runs"]
     a.close()
     return a
 

@@ -141,7 +141,8 @@ export function splitPending(pending, saved, rules) {
 const distIn = (run, p) => continued(p.mark, run.start, run.breaks.slice(0, p.breakCount ?? run.breaks.length));
 
 // 아직 안 잰 예정 지점. 잰 거리 너머의 예정은 세지 않는다(끝까지 못 감, 실제 끝이 지도보다 짧은 길).
-// 다만 길이 경고가 있는 '길 맞음'은 끝값을 믿지 않고, 끝 앞 예정이 끝값에 걸려 빠져도 끝까지 end_gap을 넘으면 끝 앞 한 곳이 남는다.
+// 다만 길이 경고가 있는 '길 맞음'은 끝값을 믿지 않는다. '길 맞음'에서 마지막 지점부터 끝까지 end_gap을 넘으면 끝 앞 한 곳이 남는다(매뉴얼 5장 다 2).
+// 계획된 중단이 있으면 그 너머는 재지 않으므로 끝을 중단 거리로 본다.
 export function leftMarks(run, geo, rules) {
   if (run.result !== "ok" && run.result !== "stopped") return [];
   const plan = planMarks(geo.len, geo.fine, geo.stop, rules, geo.inclines);
@@ -149,14 +150,13 @@ export function leftMarks(run, geo, rules) {
   const left = pendingMarks(plan, saved, geo.len, geo.fine, rules, geo.stop);
   const measured = run.end != null ? continued(run.end, run.start, run.breaks) : null;
   if (measured == null) return run.result === "stopped" ? [] : left;
-  if (run.result === "ok" && lengthMismatch(measured, geo.len, rules)) return left;
   const S = rules.slope;
-  const limit = measured - S.match_tol - EPS;
-  const inside = left.filter((p) => p.mark < limit);
-  if (run.result !== "ok" || !left.some((p) => p.kind === "end" && p.mark >= limit)) return inside;
-  const last = [...saved, ...inside].reduce((m, p) => Math.max(m, p.mark), 0);
-  if (measured - last <= S.end_gap + EPS) return inside;
-  return [...inside, { mark: round1(measured - S.end_back), kind: "end", both: false, cross: true }];
+  const kept = run.result === "ok" && lengthMismatch(measured, geo.len, rules) ? left : left.filter((p) => p.mark < measured - S.match_tol - EPS);
+  if (run.result !== "ok") return kept;
+  const reach = geo.stop != null ? Math.min(measured, geo.stop) : measured;
+  const last = [...saved, ...kept].reduce((m, p) => Math.max(m, p.mark), 0);
+  if (reach - last <= S.end_gap + EPS) return kept;
+  return [...kept, { mark: round1(reach - S.end_back), kind: "end", both: false, cross: true }];
 }
 
 // 좌우 '못 잼': 값이 없거나, 재확인 범위의 첫 값만 있고 둘째를 못 읽었다. 값을 나중에 넣으면 빠진다.

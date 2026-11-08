@@ -536,6 +536,7 @@ function displayAnswer(step, v) {
 }
 
 function setAnswer(form, step, value) {
+  S.backHintFor = null;
   form.answers[step.key] = value;
   form.buf = "";
   form.sign = null;
@@ -580,6 +581,7 @@ function formScreen() {
       h("div", {}, "다른 폰에서 이어 쓰려면 백업 파일을 고르세요"), restoreInput()),
     list,
     S.msg && h("div", { class: "notice" }, S.msg),
+    S.backHintFor === form && h("div", { class: "notice", "data-t": "back-hint" }, `뒤로 가기로는 이 입력을 벗어나지 않습니다. ${form.kind === "day" ? "" : "그만두려면 취소를 누르세요. "}앱이 닫혀도 다시 열면 입력하던 내용이 돌아옵니다`),
     step ? stepPanel(form, step) : summaryPanel(form, def));
 }
 
@@ -598,7 +600,7 @@ function stepPanel(form, step) {
     return h("div", { class: "panel" }, q, h("div", { class: `options${step.grid ? " grid" : ""}` }, opts));
   }
   if (step.type === "text") {
-    const ta = h("textarea", { "data-t": "text", value: form.answers[`__${step.key}`] || "", rows: 2 });
+    const ta = h("textarea", { "data-t": "text", value: form.answers[`__${step.key}`] || "", rows: 2, oninput: () => { form.answers[`__${step.key}`] = ta.value; persistUi(); } });
     return h("div", { class: "panel" }, q, ta, btn(step.required ? "다음" : "다음 (비워도 됨)", () => {
       const v = ta.value.trim();
       if (step.required && !v) { S.msg = `${step.label}을 적어 주세요`; render(); return; }
@@ -783,7 +785,7 @@ function dbCheck() {
   if (!Sync.isConfigured()) return [name, "자료 파일에 정보 없음 (폰에만 저장)", false];
   if (!S.user) return [name, "로그인 안 함 (기록이 폰에만 남습니다)", false];
   if (S.syncError) return [name, `전송 대기 ${S.pendingN}건. ${S.syncError}`, false];
-  return [name, S.pendingN ? `로그인됨, 전송 대기 ${S.pendingN}건` : "로그인됨, 전송 끝", true];
+  return [name, S.pendingN ? `로그인됨, 전송 대기 ${S.pendingN}건` : "로그인됨, 전송 끝", !S.pendingN];
 }
 
 function autoChecks() {
@@ -802,7 +804,7 @@ function autoChecks() {
 function phoneSetupScreen() {
   const rows = autoChecks();
   const save = (passed) => act(async () => {
-    await emit("tool_check", { when: "before", tool: "phone_setup", checked: passed ? PHONE_ITEMS.length : null, of: PHONE_ITEMS.length, passed, auto: Object.fromEntries(rows.map(([k, , ok]) => [k, ok])) });
+    await emit("tool_check", { when: "before", tool: "phone_setup", checked: passed ? PHONE_ITEMS.length : null, of: PHONE_ITEMS.length, passed, auto: Object.fromEntries(autoChecks().map(([k, , ok]) => [k, ok])) });
     openForm("tool", null, { run: null, ctx: { when: "before" } });
   });
   return h("div", { class: "screen" },
@@ -1473,7 +1475,7 @@ function endReview(form) {
       h("div", {}, `못 잰 항목: ${missing.length ? missing.map((m) => MISSING_LABEL[m] || m).join(", ") : "없음"}`)),
     h("div", { class: "row" },
       btn("못 잰 것 있음", () => { form.ctx.extraMissing = extra.includes("other") ? extra.filter((x) => x !== "other") : [...extra, "other"]; render(); }, { class: `mini${extra.includes("other") ? " on" : ""}`, "data-t": "missing-other" }),
-      btn("지금 고침", () => { S.form = null; goBack(); }, { class: "mini", "data-t": "fix-now" })),
+      btn("지금 고침", () => { S.afterClose = null; S.form = null; goBack(); }, { class: "mini", "data-t": "fix-now" })),
     chk.mismatch && btn("다시 잴 목록에 넣고 닫기", act(() => closeRun(form, cleanAnswers(form), true)), { class: "warn", "data-t": "close-redo" }),
     btn("닫고 다음 구간으로", act(() => closeRun(form, cleanAnswers(form), false)), { class: "primary", "data-t": "close-run" }));
 }
@@ -1872,7 +1874,10 @@ async function syncNow() {
   if (!S.pack || S.switching || !Sync.isConfigured()) return;
   try {
     S.user = await Sync.currentUser();
-    if (!S.user) return;
+    if (!S.user) {
+      if (S.screen === "phone_setup") render();
+      return;
+    }
     const r = await Sync.pushPending();
     if (!r.skipped) S.syncError = "";
     if (r.sent) S.lastSent = nowIso();
@@ -1883,6 +1888,7 @@ async function syncNow() {
   }
   S.pendingN = await DB.pendingCount();
   refreshTop();
+  if (S.screen === "phone_setup") render();
 }
 
 async function pullDb() {
@@ -1964,10 +1970,10 @@ function guards() {
   window.addEventListener("popstate", () => {
     history.pushState({ bf: 1 }, "");
     if (S.screen === "measure" || S.screen === "move") {
-      S.notices = [{ text: "측정 중에는 뒤로 가기로 나갈 수 없습니다. 나가려면 홈 버튼을 쓰세요" }];
+      S.notices = [{ text: "측정 중에는 뒤로 가기를 쓰지 마세요. 나가려면 홈 버튼을 쓰세요" }];
       render();
-    } else if (S.form) {
-      S.msg = "입력 중에는 뒤로 가기로 나갈 수 없습니다. 그만두려면 취소를, 앱을 나가려면 홈 버튼을 쓰세요";
+    } else if (S.screen === "form" && S.form) {
+      S.backHintFor = S.form;
       render();
     } else goBack();
   });

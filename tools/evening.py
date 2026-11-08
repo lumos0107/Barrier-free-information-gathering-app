@@ -203,17 +203,15 @@ def left_marks(r, geo, rules):
     if r["end"] is None:
         return [] if r["result"] == "stopped" else left
     measured = continued(r["end"], r["start"], breaks)
-    if r["result"] == "ok" and length_mismatch(measured, geo["len"], rules):
-        return left
     S = rules["slope"]
-    limit = measured - S["match_tol"] - EPS
-    inside = [p for p in left if p["mark"] < limit]
-    if r["result"] != "ok" or not any(p["kind"] == "end" and p["mark"] >= limit for p in left):
-        return inside
-    last = max([p["mark"] for p in saved + inside] + [0])
-    if measured - last <= S["end_gap"] + EPS:
-        return inside
-    return inside + [{"mark": round1(measured - S["end_back"]), "kind": "end", "both": False, "cross": True}]
+    kept = left if r["result"] == "ok" and length_mismatch(measured, geo["len"], rules) else [p for p in left if p["mark"] < measured - S["match_tol"] - EPS]
+    if r["result"] != "ok":
+        return kept
+    reach = min(measured, geo["stop"]) if geo["stop"] is not None else measured
+    last = max([p["mark"] for p in saved + kept] + [0])
+    if reach - last <= S["end_gap"] + EPS:
+        return kept
+    return kept + [{"mark": round1(reach - S["end_back"]), "kind": "end", "both": False, "cross": True}]
 
 
 def cross_unread(p, rules):
@@ -526,8 +524,9 @@ def choose_runs(S, pack, runs=None):
     """구간마다 경로 값에 쓸 구간 측정을 고른다.
     닫힌 측정 가운데 값을 잰 것(ok, 끝까지 못 감)만 고르고, 경로 줄, 길 맞음, 길이 경고 없음, 못 잰 항목 없음, 나중 순이다.
     잰 길이는 끝까지 못 감끼리만 비교한다. 길이 경고로 다시 잰 구간에서 앞의 틀린 측정이 뽑히지 않게 한다.
-    길 아님, 출입 금지, 일시 막힘은 값을 지우지 않고 구간 상태(blocked)로 얹는다. 그 뒤에 값으로 쓸 측정이나 완주가 있으면 풀린 것으로 본다.
-    runs: {구간: 측정 번호}로 사람이 바꾼다."""
+    길 아님, 출입 금지, 일시 막힘은 값을 지우지 않고 구간 상태(blocked)로 얹는다. 그 뒤에 길이 경고 없는 완주가 있어야 풀린 것으로 본다.
+    끝까지 못 감은 막힘이 그대로일 수 있고, 길이 경고가 있는 완주는 다른 길을 걸었을 수 있어서 근거로 쓰지 않는다.
+    runs: {구간: 측정 번호}로 사람이 바꾼다. 막힘 측정을 고르면 그 결과를 유지한다. 값으로 쓸 측정을 고르는 것과 막힘을 푸는 것은 별개다."""
     runs = {str(k): v for k, v in (runs or {}).items()}
     for k, v in runs.items():
         r = S["runs"].get(v)
@@ -555,7 +554,10 @@ def choose_runs(S, pack, runs=None):
             best[seg] = closed[-1]
         else:
             best[seg] = rs[-1]
-        passed = [r for r in closed if r["result"] == "ok"] + ([best[seg]] if best[seg]["result"] in VALUE_RESULTS else [])
+        if pick and best[seg]["result"] in BLOCK_RESULTS:
+            blocked[seg] = best[seg]["result"]
+            continue
+        passed = [r for r in closed if r["result"] == "ok" and not long_warn(r)]
         since = max((S["order"].index(r["id"]) for r in passed), default=-1)
         blocks = [r for r in closed if r["result"] in BLOCK_RESULTS and S["order"].index(r["id"]) > since]
         if blocks:

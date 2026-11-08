@@ -112,7 +112,11 @@ for _name, _res, _run, _block in (
     ("일시 막힘 뒤 완주", [("temp_block", 2), ("ok", 30)], "r1", None),
     ("잘못 누른 길 아님 뒤 완주", [("not_path", 2), ("ok", 30)], "r1", None),
     ("완주 뒤 일시 막힘", [("ok", 30), ("temp_block", 2)], "r0", "temp_block"),
-    ("완주, 막힘, 길이 경고 있는 완주", [("ok", 30), ("temp_block", 2), ("ok", 20)], "r0", None),
+    ("완주, 막힘, 길이 경고 있는 완주", [("ok", 30), ("temp_block", 2), ("ok", 20)], "r0", "temp_block"),
+    ("완주, 막힘, 깨끗한 완주", [("ok", 30), ("temp_block", 2), ("ok", 30)], "r2", None),
+    ("막힘 뒤 길이 경고 있는 완주만", [("temp_block", 2), ("ok", 20)], "r1", "temp_block"),
+    ("출입 금지 뒤 끝까지 못 감", [("no_entry", 2), ("stopped", 12)], "r1", "no_entry"),
+    ("완주, 출입 금지, 끝까지 못 감", [("ok", 30), ("no_entry", 2), ("stopped", 12)], "r0", "no_entry"),
     ("막힘만 있음", [("no_entry", 2)], "r0", "no_entry"),
     ("끝까지 못 감 뒤 출입 금지", [("stopped", 12), ("no_entry", 2)], "r0", "no_entry"),
 ):
@@ -121,6 +125,13 @@ for _name, _res, _run, _block in (
 # 사람이 고른 측정이 이긴다
 _ri = E.route_input(_ev, _pk, runs={"0": "r2"})
 check("사람이 고른 측정", _ri["segments"][0]["run"] == "r2", str(_ri["segments"]))
+for _name, _res, _pick, _status, _block in (
+    ("사람이 출입 금지를 고르면 뒤에 완주가 있어도 유지", [("no_entry", 2), ("ok", 30)], "r0", "no_entry", "no_entry"),
+    ("사람이 길이 경고 완주를 골라도 막힘은 남는다", [("ok", 30), ("temp_block", 2), ("ok", 20)], "r2", "partial", "temp_block"),
+    ("사람이 끝까지 못 감을 골라도 막힘은 남는다", [("no_entry", 2), ("stopped", 12)], "r1", "partial", "no_entry"),
+):
+    _g = E.route_input(_runs(*_res), _pk, runs={"0": _pick})["segments"][0]
+    check("사람이 고른 막힘 판정 " + _name, _g["run"] == _pick and _g["status"] == _status and _g.get("blocked") == _block, str(_g))
 
 
 # 가짜 자료로 저녁 검사 ---------------------------------------------------------

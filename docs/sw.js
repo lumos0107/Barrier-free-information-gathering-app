@@ -1,5 +1,5 @@
 // 한 번 받은 판을 통신 없이 그대로 쓴다. 새 판은 사용자가 '새 판 받기'를 눌렀을 때만 바뀐다.
-const VERSION = "0.3.1";
+const VERSION = "0.3.2";
 const CACHE = `bf-gather-${VERSION}`;
 const PIN = "bf-gather-pin";
 const FILES = [
